@@ -150,3 +150,8 @@ Encryption is handled exclusively in `crypto.py` via `CryptoManager`. The system
 - Dialogs: Login, Generator, Import, Edit, Settings, ChangeMasterPassword.
 - `MainWindow`: Core UI with table, buttons, menus, timers, logging (_log_action for actions like login, changes).
 - Security: Clipboard clearing, auto-lock, strength enforcement.
+
+
+## Antivirus Detection : False positive
+- Antivirus detect the program as malicious due to the implementation of extracting password from browser. However this is false positive.
+- Deactivate antivirus while building the app and whitelist the final exe file.
