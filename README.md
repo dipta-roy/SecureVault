@@ -186,7 +186,7 @@ Antivirus software may flag SecureVault due to:
 - **Notes**:
   - Requires `password_manager.spec` (PyInstaller configuration).
   - Executable is self-contained; no Python needed on target machines.
-  - May trigger antivirus; see [False Positive Antivirus Warnings](#false-positive-antivirus-warnings).
+  - May trigger antivirus warnings.
 
 ## License
 Free and unencumbered software released into the public domain. See [UNLICENSE](UNLICENSE).
