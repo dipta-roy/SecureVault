@@ -95,6 +95,77 @@ build.bat
 
 The resulting `dist/` folder contains a self-contained executable (no Python install needed on the target machine). Test it thoroughly, as PyInstaller bundles can sometimes trigger antivirus false positives.
 
+## Usage
+
+1. **First Launch**: Set a strong master password (at least 12 characters, including uppercase, lowercase, numbers, and symbols).
+2. **Add Entries**: Use the GUI to add sites, usernames, and passwords. Generated passwords are copied to clipboard securely.
+3. **Import Passwords**: Go to the Import tab, select your browser or CSV file, and grant consent.
+4. **Lock/Unlock**: Use the lock button or timeout to secure the vault. Biometrics (Windows Hello) can be enabled for quick access.
+5. **Export/Backup**: Export encrypted backups or unencrypted CSV (with warning).
+
+The vault file is created at `~/.securevault/vault.enc` by default (cross-platform user directory).
+
+## Security
+
+- **Encryption**: AES-256-GCM for authenticated encryption.
+- **Key Derivation**: Argon2id (with PBKDF2 fallback) for password-to-key conversion.
+- **No Network**: Fully local; no telemetry or external calls.
+- **Best Practices**: Constant-time comparisons, memory zeroing for secrets, and consent for sensitive operations.
+
+For a detailed security review, see the [Security Audit](SECURITY.md) (if available).
+
+## How Encryption and Decryption Work
+
+This section explains the core security process in easy-to-understand terms. SecureVault keeps your passwords safe by turning them into unreadable "scrambled" data (encryption) and unscrambling them only when you unlock it (decryption). Everything relies on your master password—it's the only "key" to your vault.
+
+### 1. **Generating the Encryption Key**
+
+   - **What It Is**: The encryption key is a special 256-bit (32-byte) code used to scramble/unscramble your data. It's not stored anywhere—it's created fresh every time you unlock the vault.
+   - **How It's Made** (Step-by-Step):
+     1. You enter your **master password** (e.g., "MyStrongPass123!").
+     2. The app reads a **salt** from the vault file. The salt is like a unique "spice" that makes your key one-of-a-kind.
+     3. The app mixes your master password with the salt using a slow, secure math process called **Argon2id** (the main method) or **PBKDF2** (backup if Argon2 isn't available).
+        - **Why Slow?** Argon2id takes time and computer memory on purpose (e.g., 64 MiB of RAM, 3-4 iterations). This makes it super hard for hackers to guess your password with fast computers or GPUs—it could take years!
+     4. The result? A strong 256-bit key ready for encryption.
+   - **Simple Analogy**: Think of your master password as flour and the salt as sugar. Argon2id is like baking a cake: It combines them slowly to make something new and unique. The same ingredients always make the same cake, but it's hard to reverse-engineer the recipe quickly.
+   - **Where the Salt Comes From**: See the "Vault Storage" section below.
+
+   **Pro Tip**: Use a long, random master password. The app checks for strength and suggests improvements.
+
+### 2. **How the Vault Stores Data (Including Keys and Salt)**
+
+   - **The Vault File (`vault.enc`)**: This is your locked "digital safe" stored in `~/.securevault/vault.enc`. It's a binary file (not readable text) containing:
+     - **Your Passwords**: Stored as JSON (a simple list like `{"site": "google.com", "username": "user", "password": "secret"}`), but **encrypted** (scrambled).
+     - **Salt**: A random 16-byte value generated once when you create the vault. It's stored **unencrypted** at the start of the file (safe because salt isn't secret—it's just random flavor for key-making).
+     - **Nonce**: A 12-byte random number for each encryption (also unencrypted; ensures no two encryptions are identical).
+     - **Authentication Tag**: A 16-byte "checksum" to detect tampering (unencrypted).
+     - **File Structure** (Simplified):
+       ```
+       [Magic Bytes (4 bytes: "SVLT" ID)] + [Version (4 bytes: e.g., 1)] + [Salt Size (4 bytes)] + [Salt (16 bytes)] + [Nonce Size (4 bytes)] + [Nonce (12 bytes)] + [Tag Size (4 bytes)] + [Tag (16 bytes)] + [Encrypted Data (variable: your JSON passwords)]
+       ```
+     - Only the **encrypted data** part is protected; the rest is metadata to help unlock it.
+   - **No Keys Stored**: The encryption key isn't saved—it's recreated from your master password + salt every time. Biometrics (e.g., fingerprint) just help enter the password securely via Windows.
+   - **Simple Analogy**: The vault is like a locked diary. The salt is the diary's cover label (visible but harmless). Your passwords are the pages inside, scrambled with invisible ink that only your master password reveals.
+   - **Safety**: Even if someone steals `vault.enc`, they need your master password to unscramble it. The salt prevents "dictionary attacks" where hackers pre-guess common passwords.
+
+### 3. **How Decryption Works**
+
+   - **What It Is**: Decryption is the reverse of encryption—turning scrambled data back into readable passwords.
+   - **Step-by-Step Process**:
+     1. You enter your **master password** (or use biometrics).
+     2. The app opens `vault.enc` and reads the **unencrypted parts**: Salt, nonce, tag, and file ID/version (quick checks to ensure it's a valid vault).
+     3. Using the salt + master password, it generates the **encryption key** (same as above).
+     4. The app uses the key + nonce to **unscramble the encrypted data** with **AES-256-GCM**:
+        - AES-256 is the "scrambler" algorithm (super strong, like a bank vault lock).
+        - GCM mode adds a check: It verifies the authentication tag. If it doesn't match (wrong password or tampered file), it fails safely—no access granted.
+     5. Success? The app gets plain JSON data, loads it into memory for the GUI, and shows your passwords.
+     6. When done (lock or close), it clears the key and data from memory to prevent leaks.
+   - **What If Wrong Password?** The tag check fails, and decryption "breaks" harmlessly—you get an error like "Invalid password."
+   - **Simple Analogy**: Encryption is like writing in invisible ink; decryption is shining a UV light (your key) to reveal the words. The tag is like a seal—if broken, you know something's wrong.
+   - **Re-Encryption on Save**: Any changes (new passwords) update the JSON, re-encrypt it with a fresh nonce, and save back to `vault.enc`.
+
+This process ensures your data is always protected, even if your device is stolen. For technical details, see `app/crypto.py` and `app/storage.py`.
+
 ## False Positive Antivirus Warnings
 
 Some antivirus software may flag SecureVault (especially the built executable or during browser imports) as malware. This is a **false positive** for the following reasons:
