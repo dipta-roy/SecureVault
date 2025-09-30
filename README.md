@@ -68,13 +68,6 @@ No internet access is required; all operations are local.
 python -m app.main
 ```
 
-- On first run, create or select a vault file.
-- Set a strong master password (minimum 12 characters with uppercase, lowercase, digits, and special characters).
-- Unlock the vault to access features.
-- Import passwords from browsers (with consent) or CSV.
-- Add/edit entries via the GUI.
-- Enable biometric unlock in settings (Windows only).
-
 ### Building an Executable (Windows)
 
 The `build.bat` script creates a standalone executable using PyInstaller. It handles the following steps:
@@ -111,8 +104,6 @@ The vault file is created at `~/.securevault/vault.enc` by default (cross-platfo
 - **Key Derivation**: Argon2id (with PBKDF2 fallback) for password-to-key conversion.
 - **No Network**: Fully local; no telemetry or external calls.
 - **Best Practices**: Constant-time comparisons, memory zeroing for secrets, and consent for sensitive operations.
-
-For a detailed security review, see the [Security Audit](SECURITY.md) (if available).
 
 ## How Encryption and Decryption Work
 
@@ -183,8 +174,6 @@ Some antivirus software may flag SecureVault (especially the built executable or
   - Local-only: All encryption/decryption happens on-device.
   - No hidden features: Legal notices in every file emphasize ethical use.
   - If flagged, add an exception in your antivirus or build from source.
-
-If you encounter issues, run from source code or submit an issue. For production use, consider whitelisting the app in your antivirus settings.
 
 ## License
 

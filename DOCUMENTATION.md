@@ -145,13 +145,83 @@ Encryption is handled exclusively in `crypto.py` via `CryptoManager`. The system
 - `StorageManager`: Manages file I/O, encryption (detailed in Section 3).
 - Methods: create_new_vault, unlock, lock, add/update/delete/get entries, change_master_password, _save (atomic, permissions).
 
-#### ui.py (Truncated)
+#### ui.py
 - `PasswordStrengthValidator`: Checks length>=12, char types.
 - Dialogs: Login, Generator, Import, Edit, Settings, ChangeMasterPassword.
 - `MainWindow`: Core UI with table, buttons, menus, timers, logging (_log_action for actions like login, changes).
 - Security: Clipboard clearing, auto-lock, strength enforcement.
 
 
-## Antivirus Detection : False positive
-- Antivirus detect the program as malicious due to the implementation of extracting password from browser. However this is false positive.
-- Deactivate antivirus while building the app and whitelist the final exe file.
+## False Positive Antivirus Warnings
+
+Some antivirus software may flag SecureVault (especially the built executable or during browser imports) as malware. This is a **false positive** for the following reasons:
+
+- **Behavior Similarity to Malware:** The app accesses browser password databases (e.g., Chrome's `Login Data` SQLite file on Windows) and decrypts them using system APIs (like Windows DPAPI via `win32crypt`). This mimics credential-stealing malware, which often targets the same files. However, SecureVault:
+  - Requires explicit user consent via a dialog before any import.
+  - Only operates on the local device.
+  - Does not exfiltrate data (no network code).
+  - Cleans up temporary files after use.
+
+- **PyInstaller Bundles:** Executables built with PyInstaller often get flagged because they bundle Python interpreters and libraries, which can resemble packed malware. The script also uses temporary files for compilation (e.g., C# snippets for Windows Hello), which might raise suspicions.
+
+- **Why It's Safe:**
+  - Open-source: Review the code yourself.
+  - Local-only: All encryption/decryption happens on-device.
+  - No hidden features: Legal notices in every file emphasize ethical use.
+  - If flagged, add an exception in your antivirus or build from source.
+  
+## What Is the Salt?
+The salt is a random string of bytes used when creating the encryption key from your master password. Its job is to make sure that even if two people use the same password, their encryption keys (and encrypted vaults) are different. This protects against precomputed attacks (like rainbow tables) where hackers try to guess passwords.
+
+### How the Salt Is Generated
+1. **When It’s Created**:
+   - The salt is generated **when you first create your SecureVault vault** (i.e., when you set up the app and create the `vault.enc` file).
+   - It’s typically made using a secure random number generator, like Python’s `os.urandom()` or `secrets` module. For example, a common salt size for Argon2id (the key derivation function used by SecureVault) is 16 bytes (128 bits), which is random and unique for each vault.
+
+2. **How It Works**:
+   - The program calls a function (likely in `crypto.py`) to generate the salt when initializing the vault.
+   - Example (based on standard practice, not actual code):
+     ```python
+     import os
+     salt = os.urandom(16)  # 16 bytes of random data
+     ```
+   - This ensures the salt is unpredictable and unique, which is critical for security.
+
+3. **No Regeneration**:
+   - The salt is created only once when the vault is set up. It doesn’t change unless you create a new vault.
+
+### Where and How the Salt Is Stored
+1. **Stored in the Vault File**:
+   - The salt is saved inside the `vault.enc` file, which is stored in a user-specific directory like `~/.securevault/` on your computer (e.g., `C:\Users\YourName\.securevault\vault.enc` on Windows).
+   - The `vault.enc` file contains:
+     - The encrypted data (your passwords as JSON, encrypted with AES-256-GCM).
+     - The salt (unencrypted, as it’s not sensitive by itself).
+     - The nonce (a one-time random value for encryption).
+     - The authentication tag (to verify the data hasn’t been tampered with).
+   - The salt is typically stored as a prefix or metadata alongside the encrypted data. For example, the file structure might look like this (simplified):
+     ```
+     [16-byte salt][12-byte nonce][authentication tag][encrypted JSON data]
+     ```
+
+2. **Why Store the Salt?**:
+   - The salt needs to be stored with the vault so the program can recreate the same encryption key every time you enter your master password. Without the salt, the key derivation (using Argon2id or PBKDF2) wouldn’t produce the correct key to decrypt the vault.
+   - The salt isn’t secret—it’s safe to store it unencrypted because it’s just a random value that helps secure the key derivation process.
+
+3. **Not Stored Elsewhere**:
+   - The salt is **only in the `vault.enc` file**. It’s not kept in memory after the vault is locked, nor is it stored in any other file or database.
+   - If you use biometrics (e.g., Windows Hello), the salt still comes from the `vault.enc` file, not the OS credential manager.
+
+### How It’s Used in the Encryption Process
+- When you enter your master password:
+  1. The program reads the salt from the `vault.enc` file.
+  2. It combines your password with the salt using **Argon2id** (or PBKDF2 as a fallback) to create the 256-bit encryption key.
+  3. This key is used to decrypt the vault (or encrypt new data when saving).
+- The salt ensures that12-byte nonce][authentication tag][encrypted JSON data]
+     ```
+     [16-byte salt][12-byte nonce][authentication tag][encrypted JSON data]
+     ```
+
+### Security Notes
+- **Secure Generation**: Using `os.urandom()` or similar ensures the salt is cryptographically secure, making it resistant to attacks.
+- **Safe Storage**: Storing the salt unencrypted is standard practice and not a vulnerability, as the salt’s role is to add randomness, not secrecy.
+- **Potential Risk**: If the `vault.enc` file is stored in a predictable location (e.g., `~/.securevault/`), ensure the file permissions are tight (e.g., only readable by the user). Malware could potentially access the file, but the encryption still relies on the master password for security.
