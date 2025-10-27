@@ -5,7 +5,7 @@ SecureVault is a secure, local-only password manager built in Python with a PyQt
 **Legal Notice**: Use SecureVault only on devices you own or administer, with explicit consent. It is not intended for extracting passwords from unauthorized devices. Consent dialogs are shown before browser imports or biometric setup.
 
 - **Purpose**: Local password management with strong encryption and optional biometric authentication, no network access.
-- **Version**: 1.0.0.
+- **Version**: 1.2
 - **Author**: Dipta Roy.
 
 ## Table of Contents
