@@ -17,7 +17,7 @@ a = Analysis(
     ['app/main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('logo/SecureVault_logo.ico', 'logo')],
     hiddenimports=hiddenimports + [
         'cryptography',
         'argon2',
@@ -58,7 +58,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None  # Add your icon file here if you have one
+    icon='logo/SecureVault_logo.ico'  # Add your icon file here if you have one
 )
 
 # For macOS, create an app bundle

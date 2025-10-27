@@ -21,13 +21,14 @@ from PyQt5.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
     QMessageBox, QFileDialog, QGroupBox, QCheckBox, QSpinBox, QTextEdit,
     QDialogButtonBox, QHeaderView, QMenu, QAction, QProgressDialog,
-    QComboBox, QTabWidget, QFormLayout, QApplication, QInputDialog
+    QComboBox, QTabWidget, QFormLayout, QApplication, QInputDialog,
+    QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
-from PyQt5.QtGui import QIcon, QClipboard, QFont
+from PyQt5.QtGui import QIcon, QClipboard, QFont, QPixmap
 
 from .storage import StorageManager, PasswordEntry
-from .browser_import import BrowserImporter, CSVImporter
+from .browser_import import BrowserImporter
 from .biometric import BiometricManager
 
 
@@ -65,11 +66,17 @@ class PasswordStrengthValidator:
 class VaultSelectionDialog(QDialog):
     """Dialog for selecting or creating a vault."""
     
-    def __init__(self, current_path: str, parent=None):
+    def __init__(self, default_path: str, initial_path: Optional[str] = None, parent=None):
         super().__init__(parent)
-        self.current_path = current_path
+        self.default_path = default_path
+        self.current_path = initial_path if initial_path and os.path.exists(initial_path) else default_path
         self.selected_path = None
         self.init_ui()
+
+        # If an initial_path was provided and is valid, automatically accept
+        if initial_path and os.path.exists(initial_path):
+            self.selected_path = initial_path
+            self.accept()
     
     def init_ui(self):
         """Initialize the user interface."""
@@ -78,6 +85,21 @@ class VaultSelectionDialog(QDialog):
         self.setMinimumWidth(500)
         
         layout = QVBoxLayout()
+
+        # Logo and Application Name
+        logo_label = QLabel()
+        logo_pixmap = QPixmap("logo/SecureVault_logo.png")
+        logo_label.setPixmap(logo_pixmap.scaledToHeight(40, Qt.SmoothTransformation))
+        logo_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(logo_label)
+
+        title_label = QLabel("SecureVault Password Manager")
+        title_label.setAlignment(Qt.AlignCenter)
+        font = title_label.font()
+        font.setPointSize(16)
+        font.setBold(True)
+        title_label.setFont(font)
+        layout.addWidget(title_label)
         
         # Current vault info
         current_group = QGroupBox("Current Vault")
@@ -632,6 +654,192 @@ class BrowserImportWorker(QThread):
             self.error.emit(str(e))
 
 
+class CSVImportWorker(QThread):
+    """Worker thread for CSV import."""
+    
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(list)
+    error = pyqtSignal(str)
+    
+    def __init__(self, filepath: str):
+        super().__init__()
+        self.filepath = filepath
+        self.importer = BrowserImporter()
+    
+    def run(self):
+        """Run the import process."""
+        try:
+            self.progress.emit(0, f"Importing from {os.path.basename(self.filepath)}...")
+            entries = self.importer.import_from_file(self.filepath)
+            self.finished.emit(entries)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class DuplicateEntriesDialog(QDialog):
+    """Dialog for managing duplicate entries."""
+    
+    def __init__(self, storage: StorageManager, parent=None):
+        super().__init__(parent)
+        self.storage = storage
+        self.init_ui()
+        self.load_duplicates()
+    
+    def init_ui(self):
+        self.setWindowTitle("Duplicate Entries")
+        self.setModal(True)
+        self.setMinimumWidth(900)
+        
+        layout = QVBoxLayout()
+        
+        self.table = QTableWidget()
+        self.table.setColumnCount(7)
+        self.table.setHorizontalHeaderLabels([
+            "Select", "Site/App", "Username", "Password", "URL", "Notes", "Date Added"
+        ])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.table.setColumnWidth(0, 50) # Checkbox
+        self.table.setColumnWidth(1, 150) # Site/App
+        self.table.setColumnWidth(2, 150) # Username
+        self.table.setColumnWidth(3, 100) # Password
+        self.table.setColumnWidth(4, 150) # URL
+        self.table.setColumnWidth(5, 150) # Notes
+        self.table.setColumnWidth(6, 100) # Date Added
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SingleSelection) # Allow single selection for 'Keep One'
+        layout.addWidget(self.table)
+        
+        button_layout = QHBoxLayout()
+        self.delete_button = QPushButton("Delete Selected")
+        self.delete_button.clicked.connect(self.delete_selected)
+        button_layout.addWidget(self.delete_button)
+
+        self.keep_one_button = QPushButton("Keep One Selected")
+        self.keep_one_button.clicked.connect(self.keep_one_selected)
+        self.keep_one_button.setEnabled(False) # Initially disabled
+        button_layout.addWidget(self.keep_one_button)
+        
+        self.close_button = QPushButton("Close")
+        self.close_button.clicked.connect(self.accept)
+        button_layout.addWidget(self.close_button)
+        
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
+
+        self.table.itemChanged.connect(self.update_button_states)
+    
+    def load_duplicates(self):
+        self.table.setRowCount(0)
+        duplicates = self.storage.find_duplicate_entries()
+        
+        row = 0
+        for group_idx, group in enumerate(duplicates):
+            for entry in group:
+                self.table.insertRow(row)
+                
+                checkbox_item = QTableWidgetItem()
+                checkbox_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+                checkbox_item.setCheckState(Qt.Unchecked)
+                checkbox_item.setData(Qt.UserRole, {'id': entry.id, 'group_id': group_idx})
+                self.table.setItem(row, 0, checkbox_item)
+                
+                self.table.setItem(row, 1, QTableWidgetItem(entry.site))
+                self.table.setItem(row, 2, QTableWidgetItem(entry.username))
+                self.table.setItem(row, 3, QTableWidgetItem(entry.password))
+                self.table.setItem(row, 4, QTableWidgetItem(entry.url))
+                self.table.setItem(row, 5, QTableWidgetItem(entry.notes))
+                self.table.setItem(row, 6, QTableWidgetItem(entry.date_added))
+                row += 1
+        self.update_button_states()
+
+    def update_button_states(self):
+        """Update the enabled state of the delete and keep one buttons."""
+        checked_count = 0
+        for row in range(self.table.rowCount()):
+            checkbox_item = self.table.item(row, 0)
+            if checkbox_item and checkbox_item.checkState() == Qt.Checked:
+                checked_count += 1
+        
+        self.delete_button.setEnabled(checked_count > 0)
+        self.keep_one_button.setEnabled(checked_count == 1)
+
+    def delete_selected(self):
+        """Delete selected duplicate entries."""
+        ids_to_delete = []
+        for row in range(self.table.rowCount()):
+            checkbox_item = self.table.item(row, 0)
+            if checkbox_item and checkbox_item.checkState() == Qt.Checked:
+                data = checkbox_item.data(Qt.UserRole)
+                if data and 'id' in data:
+                    ids_to_delete.append(data['id'])
+        
+        if not ids_to_delete:
+            QMessageBox.information(self, "No Selection", "No entries selected for deletion.")
+            return
+
+        reply = QMessageBox.question(
+            self, "Confirm Deletion",
+            f"Are you sure you want to delete {len(ids_to_delete)} selected entries?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            if self.storage.delete_entries(ids_to_delete):
+                self.table.clearContents()
+                self.load_duplicates()
+                QMessageBox.information(self, "Success", "Selected entries have been deleted.")
+                if self.parent():
+                    self.parent().load_entries()
+            else:
+                QMessageBox.warning(self, "Error", "Failed to delete entries.")
+
+    def keep_one_selected(self):
+        """Keep one selected entry and delete all other duplicates in its group."""
+        selected_entry_id = None
+        selected_group_id = None
+        
+        for row in range(self.table.rowCount()):
+            checkbox_item = self.table.item(row, 0)
+            if checkbox_item and checkbox_item.checkState() == Qt.Checked:
+                data = checkbox_item.data(Qt.UserRole)
+                if data and 'id' in data and 'group_id' in data:
+                    selected_entry_id = data['id']
+                    selected_group_id = data['group_id']
+                    break
+        
+        if not selected_entry_id:
+            QMessageBox.information(self, "No Selection", "Please select exactly one entry to keep.")
+            return
+
+        ids_to_delete = []
+        for row in range(self.table.rowCount()):
+            checkbox_item = self.table.item(row, 0)
+            if checkbox_item:
+                data = checkbox_item.data(Qt.UserRole)
+                if data and 'id' in data and 'group_id' in data and data['group_id'] == selected_group_id and data['id'] != selected_entry_id:
+                    ids_to_delete.append(data['id'])
+        
+        if not ids_to_delete:
+            QMessageBox.information(self, "No Duplicates", "No other duplicates found in this group to delete.")
+            return
+
+        reply = QMessageBox.question(
+            self, "Confirm Resolution",
+            f"Are you sure you want to keep the selected entry and delete {len(ids_to_delete)} other duplicates in this group?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            if self.storage.delete_entries(ids_to_delete):
+                self.table.clearContents()
+                self.load_duplicates()
+                QMessageBox.information(self, "Success", "Duplicates resolved. Other entries in the group have been deleted.")
+                if self.parent():
+                    self.parent().load_entries()
+            else:
+                QMessageBox.warning(self, "Error", "Failed to resolve duplicates.")
+
+
 class MainWindow(QMainWindow):
     """Main application window."""
     
@@ -666,6 +874,12 @@ class MainWindow(QMainWindow):
         
         # Toolbar
         toolbar_layout = QHBoxLayout()
+
+        # Add logo
+        logo_label = QLabel()
+        logo_pixmap = QPixmap("logo/SecureVault_logo.png")
+        logo_label.setPixmap(logo_pixmap.scaledToHeight(30, Qt.SmoothTransformation)) # Adjust height as needed
+        toolbar_layout.addWidget(logo_label)
         
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search entries...")
@@ -687,32 +901,39 @@ class MainWindow(QMainWindow):
         self.settings_button = QPushButton("Settings")
         self.settings_button.clicked.connect(self.show_settings)
         toolbar_layout.addWidget(self.settings_button)
+
+        self.delete_selected_button = QPushButton("Delete Selected")
+        self.delete_selected_button.clicked.connect(self.delete_selected_entries)
+        self.delete_selected_button.setEnabled(False) # Initially disabled
+        toolbar_layout.addWidget(self.delete_selected_button)
         
         layout.addLayout(toolbar_layout)
         
         # Password table
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
+        self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels([
-            "Site/App", "Username", "Password", "Notes", "Date Added", "Actions"
+            "Select", "Site/App", "Username", "Password", "Notes", "Date Added", "Actions"
         ])
         
         # Configure table
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.setColumnWidth(0, 200)  # Site
-        self.table.setColumnWidth(1, 200)  # Username
-        self.table.setColumnWidth(2, 150)  # Password
-        self.table.setColumnWidth(3, 150)  # Notes
-        self.table.setColumnWidth(4, 150)  # Date
+        self.table.setColumnWidth(0, 50)   # Checkbox
+        self.table.setColumnWidth(1, 200)  # Site
+        self.table.setColumnWidth(2, 200)  # Username
+        self.table.setColumnWidth(3, 150)  # Password
+        self.table.setColumnWidth(4, 150)  # Notes
+        self.table.setColumnWidth(5, 150)  # Date
         
-        # Hide password column by default
-        self.table.setColumnHidden(2, True)
+        # Hide password column by default (now column 3)
+        self.table.setColumnHidden(3, True)
         
         # Context menu
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.show_context_menu)
+        self.table.itemChanged.connect(self.update_delete_selected_button_state)
         
         layout.addWidget(self.table)
         
@@ -757,10 +978,20 @@ class MainWindow(QMainWindow):
         # View menu
         view_menu = menubar.addMenu("View")
         
-        show_passwords_action = QAction("Show Passwords", self)
-        show_passwords_action.setCheckable(True)
-        show_passwords_action.toggled.connect(self.toggle_password_visibility)
-        view_menu.addAction(show_passwords_action)
+        self.show_passwords_action = QAction("Show Passwords", self)
+        self.show_passwords_action.setCheckable(True)
+        self.show_passwords_action.toggled.connect(self.toggle_password_visibility)
+        view_menu.addAction(self.show_passwords_action)
+        # Tools menu
+        tools_menu = menubar.addMenu("Tools")
+        find_duplicates_action = QAction("Find Duplicates...", self)
+        find_duplicates_action.triggered.connect(self.show_find_duplicates)
+        tools_menu.addAction(find_duplicates_action)
+
+    def show_find_duplicates(self):
+        """Show the find duplicates dialog."""
+        dialog = DuplicateEntriesDialog(self.storage, self)
+        dialog.exec_()
     
     def eventFilter(self, obj, event):
         """Reset auto-lock timer on user activity."""
@@ -831,18 +1062,17 @@ class MainWindow(QMainWindow):
     
     def toggle_password_visibility(self, checked: bool):
         """Toggle password column visibility."""
-        if checked:
-            self.table.setColumnHidden(2, False)
-            # Show actual passwords
-            for row in range(self.table.rowCount()):
-                entry_id = self.table.item(row, 0).data(Qt.UserRole)
-                entries = self.storage.get_entries()
-                entry = next((e for e in entries if e.id == entry_id), None)
+        self.table.setColumnHidden(3, not checked)
+        for row in range(self.table.rowCount()):
+            site_item = self.table.item(row, 1) # Adjusted column index
+            if site_item:
+                entry = site_item.data(Qt.UserRole)  # Retrieve the full entry object
                 if entry:
-                    self.table.setItem(row, 2, QTableWidgetItem(entry.password))
-        else:
-            self.table.setColumnHidden(2, True)
-    
+                    if checked:
+                        self.table.setItem(row, 3, QTableWidgetItem(entry.password)) # Adjusted column index
+                    else:
+                        self.table.setItem(row, 3, QTableWidgetItem("••••••••")) # Adjusted column index
+
     def load_entries(self):
         """Load entries into the table."""
         self.table.setRowCount(0)
@@ -850,20 +1080,69 @@ class MainWindow(QMainWindow):
         
         for entry in entries:
             self.add_entry_to_table(entry)
+        
+        # Ensure password visibility is correct after loading entries
+        self.toggle_password_visibility(self.show_passwords_action.isChecked())
+        self.update_delete_selected_button_state() # Update button state after loading
+
+    def update_delete_selected_button_state(self):
+        """Enable/disable delete selected button based on checkbox states."""
+        has_checked_items = False
+        for row in range(self.table.rowCount()):
+            checkbox_item = self.table.item(row, 0)
+            if checkbox_item and checkbox_item.checkState() == Qt.Checked:
+                has_checked_items = True
+                break
+        self.delete_selected_button.setEnabled(has_checked_items)
+
+    def delete_selected_entries(self):
+        """Delete all selected entries from the table and storage."""
+        ids_to_delete = []
+        for row in range(self.table.rowCount()):
+            checkbox_item = self.table.item(row, 0)
+            if checkbox_item and checkbox_item.checkState() == Qt.Checked:
+                entry_id = checkbox_item.data(Qt.UserRole)
+                if entry_id:
+                    ids_to_delete.append(entry_id)
+        
+        if not ids_to_delete:
+            QMessageBox.information(self, "No Selection", "No entries selected for deletion.")
+            return
+        
+        reply = QMessageBox.question(
+            self, "Confirm Deletion",
+            f"Are you sure you want to delete {len(ids_to_delete)} selected entries?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            if self.storage.delete_entries(ids_to_delete):
+                self.load_entries() # Reload all entries after deletion
+                self.statusBar().showMessage(f"Deleted {len(ids_to_delete)} entries", 2000)
+            else:
+                QMessageBox.warning(self, "Error", "Failed to delete entries.")
+
     
     def add_entry_to_table(self, entry: PasswordEntry):
         """Add an entry to the table."""
         row = self.table.rowCount()
         self.table.insertRow(row)
         
-        # Store entry ID in first column
-        site_item = QTableWidgetItem(entry.site)
-        site_item.setData(Qt.UserRole, entry.id)
-        self.table.setItem(row, 0, site_item)
+        # Checkbox for bulk selection
+        checkbox_item = QTableWidgetItem()
+        checkbox_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+        checkbox_item.setCheckState(Qt.Unchecked)
+        checkbox_item.setData(Qt.UserRole, entry.id) # Store entry ID
+        self.table.setItem(row, 0, checkbox_item)
         
-        self.table.setItem(row, 1, QTableWidgetItem(entry.username))
-        self.table.setItem(row, 2, QTableWidgetItem("••••••••"))
-        self.table.setItem(row, 3, QTableWidgetItem(entry.notes[:50] + "..." if len(entry.notes) > 50 else entry.notes))
+        # Store entry ID and full entry object in first column
+        site_item = QTableWidgetItem(entry.site)
+        site_item.setData(Qt.UserRole, entry)  # Store the full entry object
+        self.table.setItem(row, 1, site_item)
+        
+        self.table.setItem(row, 2, QTableWidgetItem(entry.username))
+        self.table.setItem(row, 3, QTableWidgetItem("••••••••"))
+        self.table.setItem(row, 4, QTableWidgetItem(entry.notes[:50] + "..." if len(entry.notes) > 50 else entry.notes))
         
         # Format date
         if entry.date_added:
@@ -874,7 +1153,7 @@ class MainWindow(QMainWindow):
                 date_str = entry.date_added
         else:
             date_str = ""
-        self.table.setItem(row, 4, QTableWidgetItem(date_str))
+        self.table.setItem(row, 5, QTableWidgetItem(date_str))
         
         # Actions widget
         actions_widget = QWidget()
@@ -906,7 +1185,7 @@ class MainWindow(QMainWindow):
         actions_layout.addWidget(delete_btn)
         
         actions_widget.setLayout(actions_layout)
-        self.table.setCellWidget(row, 5, actions_widget)
+        self.table.setCellWidget(row, 6, actions_widget)
     
     def filter_entries(self):
         """Filter entries based on search text."""
@@ -1011,14 +1290,20 @@ class MainWindow(QMainWindow):
     
     def copy_password(self, entry: PasswordEntry):
         """Copy password to clipboard with auto-clear."""
-        clipboard = QApplication.clipboard()
-        clipboard.setText(entry.password)
-        
-        # Start timer to clear clipboard
-        self.clipboard_timer.stop()
-        self.clipboard_timer.start(30000)  # 30 seconds
-        
-        self.statusBar().showMessage("Password copied to clipboard (auto-clear in 30s)", 2000)
+        password_bytes = bytearray(entry.password.encode('utf-8'))
+        try:
+            clipboard = QApplication.clipboard()
+            clipboard.setText(password_bytes.decode('utf-8'))
+            
+            # Start timer to clear clipboard
+            self.clipboard_timer.stop()
+            self.clipboard_timer.start(30000)  # 30 seconds
+            
+            self.statusBar().showMessage("Password copied to clipboard (auto-clear in 30s)", 2000)
+        finally:
+            # Clear password from memory
+            for i in range(len(password_bytes)):
+                password_bytes[i] = 0
     
     def clear_clipboard(self):
         """Clear the clipboard."""
@@ -1035,20 +1320,23 @@ class MainWindow(QMainWindow):
         
         # Browser import options
         browser_menu = menu.addMenu("Import from browser")
-        chrome_action = browser_menu.addAction("Google Chrome")
-        firefox_action = browser_menu.addAction("Mozilla Firefox")
-        edge_action = browser_menu.addAction("Microsoft Edge")
+        
+        importer = BrowserImporter()
+        detected_browsers = importer._detect_installed_browsers()
+
+        if not detected_browsers:
+            browser_menu.addAction("No supported browsers found").setEnabled(False)
+        else:
+            for browser in detected_browsers:
+                action = browser_menu.addAction(browser.replace("_", " ").title())
+                action.triggered.connect(lambda checked, b=browser: self.import_from_browser(b))
         
         action = menu.exec_(self.import_button.mapToGlobal(self.import_button.rect().bottomLeft()))
         
         if action == csv_action:
             self.import_csv()
-        elif action == chrome_action:
-            self.import_from_browser("chrome")
-        elif action == firefox_action:
-            self.import_from_browser("firefox")
-        elif action == edge_action:
-            self.import_from_browser("edge")
+        # The browser actions are now handled by their triggered signals
+
     
     def import_csv(self):
         """Import passwords from CSV file."""
@@ -1057,30 +1345,46 @@ class MainWindow(QMainWindow):
         )
         
         if filename:
-            try:
-                importer = CSVImporter()
-                entries = importer.import_from_file(filename)
-                
-                # Add entries to storage
-                added = 0
-                for entry in entries:
-                    self.storage.add_entry(entry)
-                    added += 1
-                
-                self.load_entries()
-                QMessageBox.information(
-                    self, "Import Complete",
-                    f"Successfully imported {added} entries"
-                )
-                
-                # Log the import
-                self._log_action("CSV_IMPORT", f"Imported {added} entries from {filename}")
-                
-            except Exception as e:
-                QMessageBox.critical(
-                    self, "Import Error",
-                    f"Failed to import CSV: {str(e)}"
-                )
+            progress = QProgressDialog("Importing CSV file...", "Cancel", 0, 100, self)
+            progress.setWindowModality(Qt.WindowModal)
+            progress.show()
+            
+            self.csv_import_worker = CSVImportWorker(filename)
+            self.csv_import_worker.progress.connect(lambda v, msg: (progress.setValue(v), progress.setLabelText(msg)))
+            self.csv_import_worker.finished.connect(lambda entries: self._handle_csv_import_finished(entries, progress, filename))
+            self.csv_import_worker.error.connect(lambda err: self._handle_csv_import_error(err, progress))
+            self.csv_import_worker.start()
+
+    def _handle_csv_import_finished(self, entries: List[PasswordEntry], progress: QProgressDialog, filename: str):
+        """Handle successful CSV import."""
+        progress.close()
+        
+        if not entries:
+            QMessageBox.information(
+                self, "No Entries Found",
+                "No valid entries were found in the CSV file."
+            )
+            return
+
+        added = 0
+        for entry in entries:
+            self.storage.add_entry(entry)
+            added += 1
+        
+        self.load_entries()
+        QMessageBox.information(
+            self, "Import Complete",
+            f"Successfully imported {added} entries from {os.path.basename(filename)}"
+        )
+        self._log_action("CSV_IMPORT", f"Imported {added} entries from {filename}")
+
+    def _handle_csv_import_error(self, error: str, progress: QProgressDialog):
+        """Handle CSV import error."""
+        progress.close()
+        QMessageBox.critical(
+            self, "Import Error",
+            f"Failed to import CSV: {error}"
+        )
     
     def import_from_browser(self, browser: str):
         """Import passwords from a browser."""
@@ -1401,7 +1705,7 @@ class SettingsDialog(QDialog):
         
         about_text = QLabel(
             "<h3>SecureVault Password Manager</h3>"
-            "<p>Version 1.0.0</p>"
+            "<p>Version 1.2</p>"
             "<p><b>Legal Notice:</b><br>"
             "This tool is for personal use only. It must operate only on the device "
             "where it is installed and only with the explicit consent of the device owner. "

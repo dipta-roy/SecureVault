@@ -19,6 +19,8 @@ from typing import Optional, Tuple
 from PyQt5.QtWidgets import QInputDialog, QLineEdit, QMessageBox, QApplication
 from PyQt5.QtCore import Qt, QTimer
 
+from app.utils import _set_windows_file_permissions
+
 logger = logging.getLogger(__name__)
 
 
@@ -189,6 +191,7 @@ class BiometricManager:
         self.system = platform.system()
         self._available = True
         self._stored_hash = None
+        self._stored_salt = None
         self._windows_hello = None
         
         if self.system == "Windows":
@@ -197,7 +200,7 @@ class BiometricManager:
         self._load_auth_hash()
     
     def _load_auth_hash(self):
-        """Load stored authentication hash if exists."""
+        """Load stored authentication hash and salt if they exist."""
         config_dir = os.path.join(os.path.expanduser("~"), ".securevault")
         auth_file = os.path.join(config_dir, "auth.json")
         
@@ -206,43 +209,51 @@ class BiometricManager:
                 with open(auth_file, 'r') as f:
                     data = json.load(f)
                     self._stored_hash = data.get('auth_hash')
+                    self._stored_salt = base64.b64decode(data.get('auth_salt', ''))
             except:
                 pass
     
     def _save_auth_hash(self, password: str):
-        """Save authentication hash for PIN unlock."""
+        """Save authentication hash and salt for PIN unlock."""
         config_dir = os.path.join(os.path.expanduser("~"), ".securevault")
         os.makedirs(config_dir, exist_ok=True)
         auth_file = os.path.join(config_dir, "auth.json")
         
+        salt = os.urandom(16)
         auth_hash = hashlib.pbkdf2_hmac(
             'sha256',
             password.encode('utf-8'),
-            b'SecureVault_Auth_Salt',
+            salt,
             100000
         )
         
         try:
-            data = {'auth_hash': base64.b64encode(auth_hash).decode()}
+            data = {
+                'auth_hash': base64.b64encode(auth_hash).decode(),
+                'auth_salt': base64.b64encode(salt).decode()
+            }
             with open(auth_file, 'w') as f:
                 json.dump(data, f)
             
-            if platform.system() != 'Windows':
+            if platform.system() == 'Windows':
+                _set_windows_file_permissions(auth_file)
+            else:
                 os.chmod(auth_file, 0o600)
                 
             self._stored_hash = data['auth_hash']
+            self._stored_salt = salt
         except Exception as e:
             logger.error(f"Error saving auth hash: {e}")
     
     def _verify_auth_password(self, password: str) -> bool:
         """Verify if the entered password matches stored hash."""
-        if not self._stored_hash:
+        if not self._stored_hash or not self._stored_salt:
             return True
         
         auth_hash = hashlib.pbkdf2_hmac(
             'sha256',
             password.encode('utf-8'),
-            b'SecureVault_Auth_Salt',
+            self._stored_salt,
             100000
         )
         
@@ -395,7 +406,9 @@ class BiometricManager:
             with open(secrets_file, 'w') as f:
                 json.dump(data, f)
             
-            if platform.system() != 'Windows':
+            if platform.system() == 'Windows':
+                _set_windows_file_permissions(secrets_file)
+            else:
                 os.chmod(secrets_file, 0o600)
             
             logger.info(f"Secret stored: {key}")

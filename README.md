@@ -57,7 +57,7 @@ SecureVault is a secure, local-only password manager built in Python with a PyQt
    pip install -r requirements.txt
    ```
    - Requires Python 3.10+ (tested on 3.12).
-   - Dependencies: `PyQt5`, `cryptography`, `argon2-cffi` (optional, recommended), `pywin32` (Windows).
+   - Dependencies: `PyQt5`, `cryptography`, `argon2-cffi` (optional, recommended), `pywin32` (Windows, **essential for Windows security features**).
    - No internet required post-installation.
 
 4. **Run from Source**:
@@ -127,7 +127,7 @@ SecureVault protects your passwords by scrambling them (encryption) and only uns
 - **Local-Only**: No network calls or telemetry (verifiable via packet sniffing).
 - **Encryption**: AES-256-GCM (NIST SP 800-38D) with Argon2id key derivation.
 - **Best Practices**: Constant-time comparisons, memory zeroing (limited by Python’s garbage collector), and consent dialogs.
-- **File Security**: Vault and biometric files (`auth.json`, `biometric.json`) use 600 permissions on non-Windows.
+- **File Security**: Vault and biometric files (`auth.json`, `biometric.json`) use restrictive permissions (owner-only read/write) on all supported platforms (Windows, macOS, Linux).
 
 ### False Positive Antivirus Warnings
 Antivirus software may flag SecureVault due to:
@@ -173,6 +173,7 @@ Antivirus software may flag SecureVault due to:
 - **`app/main.py`**: Application entry point; initializes Qt and storage.
 - **`app/storage.py`**: Manages `vault.enc` (load/save, lock/unlock).
 - **`app/ui.py`**: Defines GUI (login, main window, settings).
+- **`app/utils.py`**: Provides utility functions, including Windows-specific file permission handling.
 
 ### Build Process
 - **File**: `build.bat` (Windows).

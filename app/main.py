@@ -15,6 +15,7 @@ import signal
 from typing import Optional
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QIcon
 
 from app.ui import MainWindow, LoginDialog, VaultSelectionDialog
 from app.storage import StorageManager
@@ -28,6 +29,15 @@ class PasswordManagerApp:
         self.app = QApplication(sys.argv)
         self.app.setApplicationName("SecureVault")
         self.app.setOrganizationName("SecureVault")
+        
+        # Set application icon
+        if getattr(sys, '_MEIPASS', False):
+            # Running as a PyInstaller bundle
+            icon_path = os.path.join(sys._MEIPASS, 'logo', 'SecureVault_logo.ico')
+        else:
+            # Running from source
+            icon_path = "logo/SecureVault_logo.ico"
+        self.app.setWindowIcon(QIcon(icon_path))
         
         # Set application style
         self.app.setStyle('Fusion')
@@ -82,24 +92,14 @@ class PasswordManagerApp:
     
     def run(self) -> int:
         """Run the application."""
-        # Check for last used vault
-        last_vault = self._get_last_used_vault()
-        
-        if last_vault:
-            # Use last vault
-            vault_path = last_vault
+        # Show vault selection dialog
+        last_used_vault = self._get_last_used_vault()
+        self.vault_dialog = VaultSelectionDialog(self.storage_path, initial_path=last_used_vault)
+        if self.vault_dialog.exec_():
+            vault_path = self.vault_dialog.selected_path or self.storage_path
         else:
-            # Check if default vault exists
-            if os.path.exists(self.storage_path):
-                vault_path = self.storage_path
-            else:
-                # Show vault selection dialog
-                self.vault_dialog = VaultSelectionDialog(self.storage_path)
-                if self.vault_dialog.exec_():
-                    vault_path = self.vault_dialog.selected_path or self.storage_path
-                else:
-                    # User cancelled, create default vault
-                    vault_path = self.storage_path
+            # User cancelled, exit
+            return 0
         
         # Create storage manager
         self.storage = StorageManager(vault_path)

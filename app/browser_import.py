@@ -15,6 +15,7 @@ import sqlite3
 import shutil
 import tempfile
 import uuid
+import base64
 from typing import List, Dict, Optional, Any
 from pathlib import Path
 
@@ -23,10 +24,11 @@ from app.storage import PasswordEntry
 # Platform-specific imports
 if platform.system() == "Windows":
     try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
         import win32crypt
-        WIN32CRYPT_AVAILABLE = True
+        WIN32_AVAILABLE = True
     except ImportError:
-        WIN32CRYPT_AVAILABLE = False
+        WIN32_AVAILABLE = False
 elif platform.system() == "Darwin":  # macOS
     import subprocess
     import keyring
@@ -63,10 +65,36 @@ class BrowserImporter:
         else:
             raise ValueError(f"Unsupported browser: {browser}")
     
+    def _get_windows_encryption_key(self, browser_path: str) -> Optional[bytes]:
+        """Get the encryption key from the browser's Local State file on Windows."""
+        local_state_path = os.path.join(browser_path, "Local State")
+        if not os.path.exists(local_state_path):
+            return None
+        
+        with open(local_state_path, "r", encoding="utf-8") as f:
+            local_state = json.load(f)
+        
+        encrypted_key = base64.b64decode(local_state["os_crypt"]["encrypted_key"])
+        # The key is prefixed with 'DPAPI'
+        encrypted_key = encrypted_key[5:]
+        
+        # Decrypt the key using Windows DPAPI
+        return win32crypt.CryptUnprotectData(encrypted_key, None, None, None, 0)[1]
+
+    def _decrypt_windows_password(self, password: bytes, key: bytes) -> str:
+        """Decrypt a password on Windows using AES-256-GCM."""
+        # The first 12 bytes are the nonce, the rest is the ciphertext
+        nonce = password[3:15]
+        ciphertext = password[15:]
+        
+        aesgcm = AESGCM(key)
+        decrypted_password = aesgcm.decrypt(nonce, ciphertext, None)
+        return decrypted_password.decode("utf-8")
+
     def _import_chrome(self) -> List[PasswordEntry]:
         """Import passwords from Chrome."""
         if self.system == "Windows":
-            return self._import_chrome_windows()
+            return self._import_chromium_windows("Google\Chrome")
         elif self.system == "Darwin":
             return self._import_chrome_macos()
         elif self.system == "Linux":
@@ -86,50 +114,44 @@ class BrowserImporter:
     def _import_edge(self) -> List[PasswordEntry]:
         """Import passwords from Edge."""
         if self.system == "Windows":
-            return self._import_edge_windows()
+            return self._import_chromium_windows("Microsoft\Edge")
         else:
             raise Exception("Edge import not supported on this platform. Please export manually.")
-    
-    def _import_chrome_windows(self) -> List[PasswordEntry]:
-        """Import Chrome passwords on Windows."""
-        if not WIN32CRYPT_AVAILABLE:
-            raise Exception("win32crypt module not available. Please install pywin32.")
+
+    def _import_chromium_windows(self, browser_path_suffix: str) -> List[PasswordEntry]:
+        """Import passwords from a Chromium-based browser on Windows."""
+        if not WIN32_AVAILABLE:
+            raise Exception("Cryptography modules not available. Please install pywin32 and cryptography.")
         
-        # Find Chrome profile
         local_app_data = os.environ.get('LOCALAPPDATA')
         if not local_app_data:
-            raise Exception("Cannot find Chrome profile directory")
+            raise Exception("Cannot find browser profile directory")
         
-        chrome_path = os.path.join(local_app_data, 'Google', 'Chrome', 'User Data', 'Default', 'Login Data')
+        browser_path = os.path.join(local_app_data, browser_path_suffix, 'User Data')
+        login_data_path = os.path.join(browser_path, 'Default', 'Login Data')
         
-        if not os.path.exists(chrome_path):
-            raise Exception("Chrome profile not found")
-        
-        # Copy database to temp location (Chrome locks it)
+        if not os.path.exists(login_data_path):
+            raise Exception("Browser profile not found")
+            
+        key = self._get_windows_encryption_key(browser_path)
+        if not key:
+            raise Exception("Could not retrieve encryption key.")
+
         temp_db = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
         temp_db.close()
         
         try:
-            shutil.copy2(chrome_path, temp_db.name)
-            
-            # Connect to database
+            shutil.copy2(login_data_path, temp_db.name)
             conn = sqlite3.connect(temp_db.name)
             cursor = conn.cursor()
             
-            # Query passwords
-            cursor.execute(
-                "SELECT origin_url, username_value, password_value FROM logins"
-            )
+            cursor.execute("SELECT origin_url, username_value, password_value FROM logins")
             
             entries = []
             for url, username, encrypted_password in cursor.fetchall():
                 try:
-                    # Decrypt password using Windows DPAPI
-                    decrypted_password = win32crypt.CryptUnprotectData(
-                        encrypted_password, None, None, None, 0
-                    )[1].decode('utf-8')
+                    decrypted_password = self._decrypt_windows_password(encrypted_password, key)
                     
-                    # Extract site name from URL
                     from urllib.parse import urlparse
                     parsed = urlparse(url)
                     site = parsed.netloc or parsed.path
@@ -142,14 +164,12 @@ class BrowserImporter:
                         url=url
                     ))
                 except Exception:
-                    # Skip entries that can't be decrypted
                     continue
             
             conn.close()
             return entries
             
         finally:
-            # Clean up temp file
             try:
                 os.unlink(temp_db.name)
             except:
@@ -173,67 +193,54 @@ class BrowserImporter:
             "Please go to chrome://settings/passwords and export your passwords."
         )
     
-    def _import_edge_windows(self) -> List[PasswordEntry]:
-        """Import Edge passwords on Windows."""
-        if not WIN32CRYPT_AVAILABLE:
-            raise Exception("win32crypt module not available. Please install pywin32.")
-        
-        # Edge uses similar structure to Chrome
-        local_app_data = os.environ.get('LOCALAPPDATA')
-        if not local_app_data:
-            raise Exception("Cannot find Edge profile directory")
-        
-        edge_path = os.path.join(local_app_data, 'Microsoft', 'Edge', 'User Data', 'Default', 'Login Data')
-        
-        if not os.path.exists(edge_path):
-            raise Exception("Edge profile not found")
-        
-        # Use same logic as Chrome
-        temp_db = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
-        temp_db.close()
-        
-        try:
-            shutil.copy2(edge_path, temp_db.name)
-            
-            conn = sqlite3.connect(temp_db.name)
-            cursor = conn.cursor()
-            
-            cursor.execute(
-                "SELECT origin_url, username_value, password_value FROM logins"
-            )
-            
-            entries = []
-            for url, username, encrypted_password in cursor.fetchall():
-                try:
-                    decrypted_password = win32crypt.CryptUnprotectData(
-                        encrypted_password, None, None, None, 0
-                    )[1].decode('utf-8')
-                    
-                    from urllib.parse import urlparse
-                    parsed = urlparse(url)
-                    site = parsed.netloc or parsed.path
-                    
-                    entries.append(PasswordEntry(
-                        id=str(uuid.uuid4()),
-                        site=site,
-                        username=username,
-                        password=decrypted_password,
-                        url=url
-                    ))
-                except Exception:
-                    continue
-            
-            conn.close()
-            return entries
-            
-        finally:
-            try:
-                os.unlink(temp_db.name)
-            except:
-                pass
+    def _get_browser_paths(self) -> Dict[str, str]:
+        """Returns a dictionary of common browser paths based on the OS."""
+        paths = {}
+        if self.system == "Windows":
+            local_app_data = os.environ.get('LOCALAPPDATA')
+            program_files = os.environ.get('PROGRAMFILES')
+            program_files_x86 = os.environ.get('PROGRAMFILES(X86)')
 
+            if local_app_data:
+                paths["chrome"] = os.path.join(local_app_data, r"Google\Chrome\User Data")
+                paths["edge"] = os.path.join(local_app_data, r"Microsoft\Edge\User Data")
+                paths["brave"] = os.path.join(local_app_data, r"BraveSoftware\Brave-Browser\User Data")
+                paths["opera"] = os.path.join(local_app_data, r"Opera Software\Opera Stable\User Data")
+                paths["vivaldi"] = os.path.join(local_app_data, r"Vivaldi\User Data")
+            if program_files:
+                paths["firefox"] = os.path.join(program_files, "Mozilla Firefox")
+            if program_files_x86:
+                paths["firefox_x86"] = os.path.join(program_files_x86, "Mozilla Firefox")
+        elif self.system == "Darwin": # macOS
+            paths["chrome"] = os.path.expanduser("~/Library/Application Support/Google/Chrome")
+            paths["firefox"] = os.path.expanduser("~/Library/Application Support/Firefox")
+            paths["edge"] = os.path.expanduser("~/Library/Application Support/Microsoft Edge")
+            paths["brave"] = os.path.expanduser("~/Library/Application Support/BraveSoftware/Brave-Browser")
+            paths["opera"] = os.path.expanduser("~/Library/Application Support/com.operasoftware.Opera")
+            paths["vivaldi"] = os.path.expanduser("~/Library/Application Support/Vivaldi")
+        elif self.system == "Linux":
+            paths["chrome"] = os.path.expanduser("~/.config/google-chrome")
+            paths["firefox"] = os.path.expanduser("~/.mozilla/firefox")
+            paths["edge"] = os.path.expanduser("~/.config/microsoft-edge")
+            paths["brave"] = os.path.expanduser("~/.config/BraveSoftware/Brave-Browser")
+            paths["opera"] = os.path.expanduser("~/.config/opera")
+            paths["vivaldi"] = os.path.expanduser("~/.config/vivaldi")
+        return paths
 
-class CSVImporter:
+    def _detect_installed_browsers(self) -> List[str]:
+        """Detects and returns a list of installed browsers."""
+        detected = []
+        browser_paths = self._get_browser_paths()
+
+        for browser, path in browser_paths.items():
+            if os.path.exists(path):
+                # For Firefox, check for profiles.ini to confirm installation
+                if "firefox" in browser:
+                    if any(Path(path).glob("profiles.ini")):
+                        detected.append("firefox")
+                else:
+                    detected.append(browser)
+        return sorted(list(set(detected))) # Remove duplicates and sort
     """Handles importing passwords from CSV files."""
     
     # Common header mappings

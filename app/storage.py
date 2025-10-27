@@ -17,9 +17,11 @@ import stat
 import platform
 import hashlib
 import hmac
+import base64
 
 from app.crypto import CryptoManager
 from app.biometric import BiometricManager
+from app.utils import _set_windows_file_permissions
 
 
 @dataclass
@@ -61,7 +63,7 @@ class StorageManager:
         self.filepath = filepath
         self.crypto = CryptoManager()
         self.biometric = BiometricManager()
-        self.lock = threading.Lock()
+        self._lock = threading.Lock()
         self._key: Optional[bytes] = None
         self._salt: Optional[bytes] = None
         self._entries: List[PasswordEntry] = []
@@ -78,7 +80,7 @@ class StorageManager:
         Args:
             master_password: The master password for encryption
         """
-        with self.lock:
+        with self._lock:
             self._salt = self.crypto.generate_salt()
             self._key = self.crypto.derive_key(master_password, self._salt)
             self._entries = []
@@ -94,7 +96,7 @@ class StorageManager:
         Returns:
             True if unlock successful, False otherwise
         """
-        with self.lock:
+        with self._lock:
             if not os.path.exists(self.filepath):
                 return False
             
@@ -151,16 +153,55 @@ class StorageManager:
             return False
         
         # Retrieve stored key
-        stored_key = self.biometric.retrieve_secret(self._biometric_key_id)
-        if not stored_key:
+        stored_key_b64 = self.biometric.retrieve_secret(self._biometric_key_id)
+        if not stored_key_b64:
             return False
         
-        try:
-            # The stored key is actually the master password encrypted
-            # In a real implementation, we'd store the derived key more securely
-            return self.unlock(stored_key)
-        except:
-            return False
+        with self._lock:
+            if not os.path.exists(self.filepath):
+                return False
+            
+            try:
+                # The stored key is the encryption key, base64 encoded
+                self._key = base64.b64decode(stored_key_b64)
+                
+                # Read file header
+                with open(self.filepath, 'rb') as f:
+                    magic = f.read(4)
+                    if magic != self.MAGIC_BYTES:
+                        return False
+                    
+                    version = struct.unpack('<I', f.read(4))[0]
+                    if version != self.VERSION:
+                        return False
+                    
+                    # Read salt
+                    salt_size = struct.unpack('<I', f.read(4))[0]
+                    self._salt = f.read(salt_size)
+                    
+                    # Read and decrypt data
+                    nonce_size = struct.unpack('<I', f.read(4))[0]
+                    nonce = f.read(nonce_size)
+                    
+                    tag_size = struct.unpack('<I', f.read(4))[0]
+                    tag = f.read(tag_size)
+                    
+                    ciphertext = f.read()
+                
+                # Decrypt
+                plaintext = self.crypto.decrypt(ciphertext, self._key, nonce, tag)
+                data = json.loads(plaintext.decode('utf-8'))
+                
+                # Load entries
+                self._entries = [PasswordEntry.from_dict(e) for e in data['entries']]
+                
+                return True
+                
+            except Exception:
+                self._key = None
+                self._salt = None
+                self._entries = []
+                return False
     
     def enable_biometric(self, master_password: str) -> bool:
         """
@@ -180,8 +221,9 @@ class StorageManager:
             if not self.unlock(master_password):
                 return False
         
-        # Store password securely
-        return self.biometric.store_secret(self._biometric_key_id, master_password)
+        # Store the derived key securely, base64 encoded
+        key_b64 = base64.b64encode(self._key).decode('utf-8')
+        return self.biometric.store_secret(self._biometric_key_id, key_b64)
     
     def disable_biometric(self) -> bool:
         """
@@ -205,7 +247,7 @@ class StorageManager:
     
     def lock(self) -> None:
         """Lock the vault and clear sensitive data."""
-        with self.lock:
+        with self._lock:
             if self._key:
                 self.crypto.clear_bytes(bytearray(self._key))
             self._key = None
@@ -213,7 +255,7 @@ class StorageManager:
     
     def add_entry(self, entry: PasswordEntry) -> None:
         """Add a new password entry."""
-        with self.lock:
+        with self._lock:
             if not self.is_unlocked():
                 raise RuntimeError("Vault is locked")
             
@@ -224,7 +266,7 @@ class StorageManager:
     
     def update_entry(self, entry_id: str, updated_entry: PasswordEntry) -> bool:
         """Update an existing entry."""
-        with self.lock:
+        with self._lock:
             if not self.is_unlocked():
                 raise RuntimeError("Vault is locked")
             
@@ -240,7 +282,7 @@ class StorageManager:
     
     def delete_entry(self, entry_id: str) -> bool:
         """Delete an entry."""
-        with self.lock:
+        with self._lock:
             if not self.is_unlocked():
                 raise RuntimeError("Vault is locked")
             
@@ -254,14 +296,40 @@ class StorageManager:
     
     def get_entries(self) -> List[PasswordEntry]:
         """Get all password entries."""
-        with self.lock:
+        with self._lock:
             if not self.is_unlocked():
                 raise RuntimeError("Vault is locked")
             return self._entries.copy()
+
+    def find_duplicate_entries(self) -> List[List[PasswordEntry]]:
+        """Find entries with duplicate site and username."""
+        if not self.is_unlocked():
+            raise RuntimeError("Vault is locked")
+
+        from collections import defaultdict
+        duplicates = defaultdict(list)
+        for entry in self._entries:
+            duplicates[(entry.site.lower(), entry.username.lower())].append(entry)
+        
+        return [group for group in duplicates.values() if len(group) > 1]
+
+    def delete_entries(self, entry_ids: List[str]) -> bool:
+        """Delete multiple entries by their IDs."""
+        with self._lock:
+            if not self.is_unlocked():
+                raise RuntimeError("Vault is locked")
+            
+            original_count = len(self._entries)
+            self._entries = [e for e in self._entries if e.id not in entry_ids]
+            
+            if len(self._entries) < original_count:
+                self._save()
+                return True
+            return False
     
     def change_master_password(self, old_password: str, new_password: str) -> bool:
         """Change the master password."""
-        with self.lock:
+        with self._lock:
             if not self.is_unlocked():
                 # Try to unlock with old password
                 if not self.unlock(old_password):
@@ -324,5 +392,7 @@ class StorageManager:
     
     def _set_file_permissions(self, filepath: str) -> None:
         """Set file to be readable/writable by owner only."""
-        if platform.system() != 'Windows':
+        if platform.system() == 'Windows':
+            _set_windows_file_permissions(filepath)
+        else:
             os.chmod(filepath, stat.S_IRUSR | stat.S_IWUSR)  # 600
