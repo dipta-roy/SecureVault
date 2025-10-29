@@ -17,8 +17,10 @@ from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QIcon
 
-from app.ui import MainWindow, LoginDialog, VaultSelectionDialog
+from app.ui import MainWindow, LoginDialog, StartupDialog
 from app.storage import StorageManager
+from app import config
+from app import vault_manager
 
 
 class PasswordManagerApp:
@@ -27,23 +29,24 @@ class PasswordManagerApp:
     def __init__(self):
         """Initialize the application."""
         self.app = QApplication(sys.argv)
-        self.app.setApplicationName("SecureVault")
-        self.app.setOrganizationName("SecureVault")
+        self.app.setApplicationName(config.APP_NAME)
+        self.app.setOrganizationName(config.APP_NAME)
         
         # Set application icon
         if getattr(sys, '_MEIPASS', False):
             # Running as a PyInstaller bundle
-            icon_path = os.path.join(sys._MEIPASS, 'logo', 'SecureVault_logo.ico')
+            icon_path = os.path.join(sys._MEIPASS, config.APP_ICON_PATH)
         else:
             # Running from source
-            icon_path = "logo/SecureVault_logo.ico"
+            icon_path = config.APP_ICON_PATH
         self.app.setWindowIcon(QIcon(icon_path))
         
         # Set application style
-        self.app.setStyle('Fusion')
+        self.app.setStyle(config.APP_STYLE)
         
         # Storage
         self.storage_path = self._get_default_storage_path()
+        self.running = True
         self.storage: Optional[StorageManager] = None
         
         # Windows
@@ -58,75 +61,122 @@ class PasswordManagerApp:
         """Get the default path for the encrypted storage file."""
         # Use user's home directory
         home = os.path.expanduser("~")
-        app_dir = os.path.join(home, ".securevault")
+        app_dir = os.path.join(home, config.CONFIG_DIR_NAME)
         
         # Create directory if it doesn't exist
         os.makedirs(app_dir, exist_ok=True)
         
-        return os.path.join(app_dir, "vault.enc")
+        return os.path.join(app_dir, config.DEFAULT_VAULT_FILE)
     
     def _get_last_used_vault(self) -> Optional[str]:
         """Get the path of the last used vault."""
-        config_dir = os.path.join(os.path.expanduser("~"), ".securevault")
-        last_vault_file = os.path.join(config_dir, "last_vault.txt")
-        
-        if os.path.exists(last_vault_file):
-            try:
-                with open(last_vault_file, 'r') as f:
-                    path = f.read().strip()
-                    if path and os.path.exists(path):
-                        return path
-            except:
-                pass
-        
+        recent_vaults = vault_manager.get_recent_vault_paths()
+        if recent_vaults:
+            return recent_vaults[0]
         return None
     
     def _save_last_used_vault(self, path: str):
         """Save the last used vault path."""
-        config_dir = os.path.join(os.path.expanduser("~"), ".securevault")
-        os.makedirs(config_dir, exist_ok=True)
-        last_vault_file = os.path.join(config_dir, "last_vault.txt")
-        
-        with open(last_vault_file, 'w') as f:
-            f.write(path)
+        vault_manager.save_recent_vault_path(path)
     
-    def run(self) -> int:
-        """Run the application."""
-        # Show vault selection dialog
-        last_used_vault = self._get_last_used_vault()
-        self.vault_dialog = VaultSelectionDialog(self.storage_path, initial_path=last_used_vault)
-        if self.vault_dialog.exec_():
-            vault_path = self.vault_dialog.selected_path or self.storage_path
+    def _start_new_session(self) -> bool:
+        """Handles the vault selection and login process."""
+        self.startup_dialog = StartupDialog(self.storage_path)
+        if self.startup_dialog.exec_():
+            vault_path = self.startup_dialog.selected_path
+            if not vault_path: # User selected to create a new vault but didn't provide a path
+                self.running = False
+                return False
         else:
-            # User cancelled, exit
-            return 0
+            # User cancelled startup dialog, terminate app
+            self.running = False
+            return False
         
-        # Create storage manager
         self.storage = StorageManager(vault_path)
         self._save_last_used_vault(vault_path)
         
-        # Show login dialog
         self.login_dialog = LoginDialog(self.storage)
-        
         if self.login_dialog.exec_():
-            # Login successful, show main window
+            # Login successful
             self.main_window = MainWindow(self.storage)
+            self.main_window.return_to_start_screen.connect(lambda: self._handle_main_window_closed(False))
+            self.main_window.exit_application.connect(lambda: self._handle_main_window_closed(True))
             self.main_window.show()
-            
-            # Run event loop
-            return self.app.exec_()
+            return True
         else:
-            # Login cancelled
-            return 0
+            # Login cancelled or returned to start screen
+            if self.login_dialog.returned_to_start:
+                return True # Go back to StartupDialog
+            else:
+                # User cancelled login, terminate app
+                self.running = False
+                return False
+
+    def _handle_main_window_closed(self, should_exit_app: bool):
+        """Handles the signal when the main window is closed."""
+        if self.main_window:
+            self.main_window.close()
+            self.main_window = None
+        
+        if should_exit_app:
+            self.running = False # Signal to exit
+        else:
+            self.running = True # Signal to return to STARTUP
+
+    def run(self) -> int:
+        """Run the application."""
+        current_state = "STARTUP"
+        
+        while current_state != "EXIT":
+            if current_state == "STARTUP":
+                self.startup_dialog = StartupDialog(self.storage_path)
+                if self.startup_dialog.exec_():
+                    vault_path = self.startup_dialog.selected_path
+                    if not vault_path:
+                        current_state = "EXIT" # User selected to create a new vault but didn't provide a path
+                    else:
+                        self.storage = StorageManager(vault_path)
+                        self._save_last_used_vault(vault_path)
+                        current_state = "LOGIN"
+                else:
+                    current_state = "EXIT" # User cancelled startup dialog
+            
+            elif current_state == "LOGIN":
+                self.login_dialog = LoginDialog(self.storage)
+                if self.login_dialog.exec_():
+                    current_state = "MAIN_WINDOW" # Login successful
+                else:
+                    if self.login_dialog.returned_to_start:
+                        current_state = "STARTUP" # Go back to StartupDialog
+                    else:
+                        current_state = "EXIT" # User cancelled login
+            
+            elif current_state == "MAIN_WINDOW":
+                self.main_window = MainWindow(self.storage)
+                self.main_window.return_to_start_screen.connect(lambda: self._handle_main_window_closed(False))
+                self.main_window.exit_application.connect(lambda: self._handle_main_window_closed(True))
+                self.main_window.show()
+                self.app.exec_() # Start event loop for MainWindow
+                
+                # After app.exec_() returns (MainWindow closed)
+                if self.running: # If self.running is True, it means return_to_start_screen was emitted
+                    current_state = "STARTUP"
+                    self.running = False # Reset for next loop iteration
+                else: # If self.running is False, it means exit_application was emitted
+                    current_state = "EXIT"
+            
+        return 0
     
     def cleanup(self):
         """Clean up resources."""
-        if self.storage and self.storage.is_unlocked():
+        if self.storage is not None and self.storage.is_unlocked():
             self.storage.lock()
 
 
 def main():
     """Main entry point."""
+    import logging
+    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
     # Enable high DPI scaling
     if hasattr(Qt, 'AA_EnableHighDpiScaling'):
         QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)

@@ -9,6 +9,3 @@ never be used to extract or exfiltrate passwords from devices you do not own or
 administer. The app requires the user to acknowledge a consent dialog before 
 fetching browser passwords.
 """
-
-__version__ = "1.0.0"
-__author__ = "SecureVault Team"

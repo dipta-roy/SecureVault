@@ -20,6 +20,7 @@ from PyQt5.QtWidgets import QInputDialog, QLineEdit, QMessageBox, QApplication
 from PyQt5.QtCore import Qt, QTimer
 
 from app.utils import _set_windows_file_permissions
+from . import config
 
 logger = logging.getLogger(__name__)
 
@@ -112,11 +113,7 @@ class Program {
             
             try:
                 # Try to compile with csc.exe if available
-                csc_paths = [
-                    r"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe",
-                    r"C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe",
-                ]
-                
+                csc_paths = config.WINDOWS_CSC_PATHS                
                 csc_exe = None
                 for path in csc_paths:
                     if os.path.exists(path):
@@ -136,7 +133,7 @@ class Program {
                         auth_result = subprocess.run(
                             [exe_file],
                             capture_output=True,
-                            timeout=30
+                            timeout=config.WINDOWS_HELLO_AUTH_TIMEOUT_SECONDS
                         )
                         
                         return auth_result.returncode == 0
@@ -201,8 +198,8 @@ class BiometricManager:
     
     def _load_auth_hash(self):
         """Load stored authentication hash and salt if they exist."""
-        config_dir = os.path.join(os.path.expanduser("~"), ".securevault")
-        auth_file = os.path.join(config_dir, "auth.json")
+        config_dir = os.path.join(os.path.expanduser("~"), config.CONFIG_DIR_NAME)
+        auth_file = os.path.join(config_dir, config.BIOMETRIC_AUTH_FILE)
         
         if os.path.exists(auth_file):
             try:
@@ -212,19 +209,18 @@ class BiometricManager:
                     self._stored_salt = base64.b64decode(data.get('auth_salt', ''))
             except:
                 pass
-    
     def _save_auth_hash(self, password: str):
         """Save authentication hash and salt for PIN unlock."""
-        config_dir = os.path.join(os.path.expanduser("~"), ".securevault")
+        config_dir = os.path.join(os.path.expanduser("~"), config.CONFIG_DIR_NAME)
         os.makedirs(config_dir, exist_ok=True)
         auth_file = os.path.join(config_dir, "auth.json")
         
-        salt = os.urandom(16)
+        salt = os.urandom(config.SALT_SIZE)
         auth_hash = hashlib.pbkdf2_hmac(
             'sha256',
             password.encode('utf-8'),
             salt,
-            100000
+            config.KEY_DERIVATION_ITERATIONS
         )
         
         try:
@@ -236,7 +232,12 @@ class BiometricManager:
                 json.dump(data, f)
             
             if platform.system() == 'Windows':
-                _set_windows_file_permissions(auth_file)
+                if not _set_windows_file_permissions(auth_file):
+                    QMessageBox.warning(
+                        None,
+                        "Permission Error",
+                        "Failed to set secure file permissions for authentication data. Please try running the application as an administrator to ensure proper security."
+                    )
             else:
                 os.chmod(auth_file, 0o600)
                 
@@ -244,7 +245,64 @@ class BiometricManager:
             self._stored_salt = salt
         except Exception as e:
             logger.error(f"Error saving auth hash: {e}")
-    
+
+    def _authenticate_with_pin(self, reason: str) -> bool:
+        """Authenticate using PIN dialog."""
+        try:
+            app = QApplication.instance()
+            parent = None
+            
+            if app:
+                for widget in app.topLevelWidgets():
+                    if widget.isVisible() and widget.isActiveWindow():
+                        parent = widget
+                        break
+            
+            # Show PIN dialog
+            pin_prompt = config.PIN_PROMPT_ENTER
+            if not self._stored_hash:
+                pin_prompt = config.PIN_PROMPT_SETUP
+            
+            password, ok = QInputDialog.getText(
+                parent,
+                "PIN Authentication",
+                pin_prompt,
+                QLineEdit.Password,
+                ""
+            )
+            
+            if ok and password:
+                if self._stored_hash:
+                    # Verify PIN
+                    if self._verify_auth_password(password):
+                        logger.info("PIN authentication successful")
+                        return True
+                    else:
+                        QMessageBox.warning(
+                            parent,
+                            "Authentication Failed",
+                            "Invalid PIN. Please try again."
+                        )
+                        return False
+                else:
+                    # First time - store the PIN hash
+                    self._save_auth_hash(password)
+                    logger.info("PIN set up successfully")
+                    
+                    QMessageBox.information(
+                        parent,
+                        "PIN Set Up",
+                        "Your PIN has been set up successfully.\nYou can now use this PIN for quick authentication."
+                    )
+                    return True
+            
+            logger.info("PIN authentication cancelled")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error during PIN authentication: {e}")
+            return False
+
     def _verify_auth_password(self, password: str) -> bool:
         """Verify if the entered password matches stored hash."""
         if not self._stored_hash or not self._stored_salt:
@@ -254,7 +312,7 @@ class BiometricManager:
             'sha256',
             password.encode('utf-8'),
             self._stored_salt,
-            100000
+            config.KEY_DERIVATION_ITERATIONS
         )
         
         stored = base64.b64decode(self._stored_hash)
@@ -327,70 +385,46 @@ class BiometricManager:
         
         # Fall back to PIN authentication
         return self._authenticate_with_pin(reason)
-    
-    def _authenticate_with_pin(self, reason: str) -> bool:
-        """Authenticate using PIN dialog."""
-        try:
-            app = QApplication.instance()
-            parent = None
-            
-            if app:
-                for widget in app.topLevelWidgets():
-                    if widget.isVisible() and widget.isActiveWindow():
-                        parent = widget
-                        break
-            
-            # Show PIN dialog
-            pin_prompt = "Enter your PIN:"
-            if not self._stored_hash:
-                pin_prompt = "Set up your PIN for quick authentication:"
-            
-            password, ok = QInputDialog.getText(
+
+    def change_pin(self) -> bool:
+        """Allow the user to change their PIN."""
+        app = QApplication.instance()
+        parent = None
+
+        if app:
+            for widget in app.topLevelWidgets():
+                if widget.isVisible() and widget.isActiveWindow():
+                    parent = widget
+                    break
+
+        new_pin, ok = QInputDialog.getText(
+            parent,
+            "Change PIN",
+            "Enter your new PIN:",
+            QLineEdit.Password,
+            ""
+        )
+
+        if ok and new_pin:
+            self._save_auth_hash(new_pin)
+            QMessageBox.information(
                 parent,
-                "PIN Authentication",
-                pin_prompt,
-                QLineEdit.Password,
-                ""
+                "PIN Changed",
+                "Your PIN has been successfully changed."
             )
-            
-            if ok and password:
-                if self._stored_hash:
-                    # Verify PIN
-                    if self._verify_auth_password(password):
-                        logger.info("PIN authentication successful")
-                        return True
-                    else:
-                        QMessageBox.warning(
-                            parent,
-                            "Authentication Failed",
-                            "Invalid PIN. Please try again."
-                        )
-                        return False
-                else:
-                    # First time - store the PIN hash
-                    self._save_auth_hash(password)
-                    logger.info("PIN set up successfully")
-                    
-                    QMessageBox.information(
-                        parent,
-                        "PIN Set Up",
-                        "Your PIN has been set up successfully.\nYou can now use this PIN for quick authentication."
-                    )
-                    return True
-            
-            logger.info("PIN authentication cancelled")
-            return False
-            
-        except Exception as e:
-            logger.error(f"Error during PIN authentication: {e}")
-            return False
-    
+            return True
+        
+        QMessageBox.warning(
+            parent,
+            "PIN Change Cancelled",
+            "PIN change cancelled."
+        )
+        return False
+
     def store_secret(self, key: str, secret: str) -> bool:
         """Store a secret protected by authentication."""
-        config_dir = os.path.join(os.path.expanduser("~"), ".securevault")
-        os.makedirs(config_dir, exist_ok=True)
-        
-        secrets_file = os.path.join(config_dir, "biometric.json")
+        config_dir = os.path.join(os.path.expanduser("~"), config.CONFIG_DIR_NAME)
+        secrets_file = os.path.join(config_dir, config.BIOMETRIC_SECRETS_FILE)
         
         try:
             data = {}
@@ -407,7 +441,12 @@ class BiometricManager:
                 json.dump(data, f)
             
             if platform.system() == 'Windows':
-                _set_windows_file_permissions(secrets_file)
+                if not _set_windows_file_permissions(secrets_file):
+                    QMessageBox.warning(
+                        None,
+                        "Permission Error",
+                        "Failed to set secure file permissions for biometric secrets. Please try running the application as an administrator to ensure proper security."
+                    )
             else:
                 os.chmod(secrets_file, 0o600)
             
@@ -420,7 +459,7 @@ class BiometricManager:
     
     def retrieve_secret(self, key: str) -> Optional[str]:
         """Retrieve a secret protected by authentication."""
-        config_dir = os.path.join(os.path.expanduser("~"), ".securevault")
+        config_dir = os.path.join(os.path.expanduser("~"), config.CONFIG_DIR_NAME)
         secrets_file = os.path.join(config_dir, "biometric.json")
         
         if not os.path.exists(secrets_file):
@@ -440,7 +479,7 @@ class BiometricManager:
     
     def delete_secret(self, key: str) -> bool:
         """Delete a stored secret."""
-        config_dir = os.path.join(os.path.expanduser("~"), ".securevault")
+        config_dir = os.path.join(os.path.expanduser("~"), config.CONFIG_DIR_NAME)
         secrets_file = os.path.join(config_dir, "biometric.json")
         
         if not os.path.exists(secrets_file):

@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.hazmat.backends import default_backend
 from cryptography.exceptions import InvalidTag
+from . import config
 
 try:
     from argon2 import PasswordHasher, Type
@@ -29,16 +30,16 @@ class CryptoManager:
     """Handles all cryptographic operations for the password manager."""
     
     # Constants
-    SALT_SIZE = 32  # 256 bits
-    KEY_SIZE = 32   # 256 bits for AES-256
-    NONCE_SIZE = 12 # 96 bits for GCM
-    TAG_SIZE = 16   # 128 bits
+    SALT_SIZE = config.SALT_SIZE  # 256 bits
+    KEY_SIZE = config.KEY_SIZE   # 256 bits for AES-256
+    NONCE_SIZE = config.NONCE_SIZE # 96 bits for GCM
+    TAG_SIZE = config.TAG_SIZE   # 128 bits
     
     # KDF parameters
-    ARGON2_TIME_COST = 2
-    ARGON2_MEMORY_COST = 65536  # 64 MB
-    ARGON2_PARALLELISM = 4
-    PBKDF2_ITERATIONS = 100000
+    ARGON2_TIME_COST = config.ARGON2_TIME_COST
+    ARGON2_MEMORY_COST = config.ARGON2_MEMORY_COST  # 64 MB
+    ARGON2_PARALLELISM = config.ARGON2_PARALLELISM
+    PBKDF2_ITERATIONS = config.PBKDF2_ITERATIONS
     
     def __init__(self):
         """Initialize the crypto manager."""

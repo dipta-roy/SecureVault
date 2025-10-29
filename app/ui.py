@@ -30,6 +30,8 @@ from PyQt5.QtGui import QIcon, QClipboard, QFont, QPixmap
 from .storage import StorageManager, PasswordEntry
 from .browser_import import BrowserImporter
 from .biometric import BiometricManager
+from . import config
+from . import vault_manager
 
 
 class PasswordStrengthValidator:
@@ -43,7 +45,7 @@ class PasswordStrengthValidator:
         Returns:
             Tuple of (is_strong, message)
         """
-        if len(password) < 12:
+        if len(password) < config.PASSWORD_MIN_LENGTH:
             return False, "Password must be at least 12 characters long"
         
         has_upper = any(c.isupper() for c in password)
@@ -63,58 +65,62 @@ class PasswordStrengthValidator:
         return True, "Password is strong"
 
 
-class VaultSelectionDialog(QDialog):
+class StartupDialog(QDialog):
     """Dialog for selecting or creating a vault."""
     
-    def __init__(self, default_path: str, initial_path: Optional[str] = None, parent=None):
+    def __init__(self, default_path: str, parent=None):
         super().__init__(parent)
         self.default_path = default_path
-        self.current_path = initial_path if initial_path and os.path.exists(initial_path) else default_path
         self.selected_path = None
         self.init_ui()
-
-        # If an initial_path was provided and is valid, automatically accept
-        if initial_path and os.path.exists(initial_path):
-            self.selected_path = initial_path
-            self.accept()
     
     def init_ui(self):
         """Initialize the user interface."""
-        self.setWindowTitle("Select Vault")
+        self.setWindowTitle(f"{config.APP_TITLE_PREFIX} - Welcome") # Changed title
         self.setModal(True)
         self.setMinimumWidth(500)
         
         layout = QVBoxLayout()
 
         # Logo and Application Name
-        logo_label = QLabel()
-        logo_pixmap = QPixmap("logo/SecureVault_logo.png")
-        logo_label.setPixmap(logo_pixmap.scaledToHeight(40, Qt.SmoothTransformation))
-        logo_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(logo_label)
+        header_layout = QHBoxLayout()
+        header_layout.setAlignment(Qt.AlignCenter)
 
-        title_label = QLabel("SecureVault Password Manager")
-        title_label.setAlignment(Qt.AlignCenter)
+        logo_label = QLabel()
+        logo_pixmap = QPixmap("logo/SecureVault_logo.ico")
+        logo_label.setPixmap(logo_pixmap.scaledToHeight(40, Qt.SmoothTransformation))
+        header_layout.addWidget(logo_label)
+        header_layout.addSpacing(10)
+
+        title_label = QLabel(config.APP_NAME)
         font = title_label.font()
         font.setPointSize(16)
         font.setBold(True)
         title_label.setFont(font)
-        layout.addWidget(title_label)
+        header_layout.addWidget(title_label)
         
-        # Current vault info
-        current_group = QGroupBox("Current Vault")
-        current_layout = QVBoxLayout()
-        current_layout.addWidget(QLabel(f"Location: {self.current_path}"))
-        current_group.setLayout(current_layout)
-        layout.addWidget(current_group)
+        layout.addLayout(header_layout)
         
         # Options
-        options_group = QGroupBox("Options")
+        options_group = QGroupBox("Vault Options")
         options_layout = QVBoxLayout()
+        
+        # Recent vaults dropdown
+        recent_layout = QHBoxLayout()
+        recent_layout.addWidget(QLabel("Recent Vaults:"))
+        self.recent_combo = QComboBox()
+        self.load_recent_vaults()
+        recent_layout.addWidget(self.recent_combo)
+        
+        self.open_recent_button = QPushButton("Open Selected")
+        self.open_recent_button.clicked.connect(self.open_recent_vault)
+        recent_layout.addWidget(self.open_recent_button)
+        self.open_recent_button.setEnabled(self.recent_combo.count() > 0)
+        options_layout.addLayout(recent_layout)
         
         # Open existing vault
         open_layout = QHBoxLayout()
-        self.open_button = QPushButton("Open Existing Vault")
+        self.open_button = QPushButton("Browse for Existing Vault")
         self.open_button.clicked.connect(self.open_existing_vault)
         open_layout.addWidget(self.open_button)
         options_layout.addLayout(open_layout)
@@ -126,64 +132,35 @@ class VaultSelectionDialog(QDialog):
         create_layout.addWidget(self.create_button)
         options_layout.addLayout(create_layout)
         
-        # Recent vaults
-        self.recent_combo = QComboBox()
-        self.load_recent_vaults()
-        if self.recent_combo.count() > 0:
-            recent_layout = QHBoxLayout()
-            recent_layout.addWidget(QLabel("Recent Vaults:"))
-            recent_layout.addWidget(self.recent_combo)
-            open_recent_button = QPushButton("Open")
-            open_recent_button.clicked.connect(self.open_recent_vault)
-            recent_layout.addWidget(open_recent_button)
-            options_layout.addLayout(recent_layout)
-        
         options_group.setLayout(options_layout)
         layout.addWidget(options_group)
         
         # Dialog buttons
-        buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close) # Only Close button
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        
+        # Footer
+        footer_label = QLabel(f"Developed by {config.APP_AUTHOR}")
+        footer_label.setAlignment(Qt.AlignCenter)
+        font = footer_label.font()
+        font.setPointSize(9)
+        footer_label.setFont(font)
+        layout.addWidget(footer_label)
         
         self.setLayout(layout)
     
     def load_recent_vaults(self):
         """Load list of recent vaults."""
-        config_dir = os.path.join(os.path.expanduser("~"), ".securevault")
-        recent_file = os.path.join(config_dir, "recent_vaults.txt")
+        self.recent_combo.clear()
+        recent_paths = vault_manager.get_recent_vault_paths()
         
-        if os.path.exists(recent_file):
-            with open(recent_file, 'r') as f:
-                for line in f:
-                    path = line.strip()
-                    if path and os.path.exists(path) and path != self.current_path:
-                        self.recent_combo.addItem(path)
+        for path in recent_paths:
+            self.recent_combo.addItem(path)
     
     def save_to_recent(self, path: str):
         """Save vault path to recent list."""
-        config_dir = os.path.join(os.path.expanduser("~"), ".securevault")
-        os.makedirs(config_dir, exist_ok=True)
-        recent_file = os.path.join(config_dir, "recent_vaults.txt")
-        
-        # Read existing recent vaults
-        recent = []
-        if os.path.exists(recent_file):
-            with open(recent_file, 'r') as f:
-                recent = [line.strip() for line in f if line.strip()]
-        
-        # Add new path at beginning
-        if path in recent:
-            recent.remove(path)
-        recent.insert(0, path)
-        
-        # Keep only last 10
-        recent = recent[:10]
-        
-        # Write back
-        with open(recent_file, 'w') as f:
-            for p in recent:
-                f.write(p + '\n')
+        vault_manager.save_recent_vault_path(path)
     
     def open_existing_vault(self):
         """Open an existing vault file."""
@@ -210,33 +187,45 @@ class VaultSelectionDialog(QDialog):
     def open_recent_vault(self):
         """Open a recent vault."""
         path = self.recent_combo.currentText()
-        if path and os.path.exists(path):
-            self.selected_path = path
-            self.save_to_recent(path)
-            self.accept()
+        if path:
+            if os.path.exists(path):
+                self.selected_path = path
+                self.save_to_recent(path)
+                self.accept()
+            else:
+                QMessageBox.warning(self, "Vault Not Found", f"The vault file '{path}' does not exist.")
 
 
 class LoginDialog(QDialog):
     """Login dialog for the password manager."""
+    return_to_start_screen = pyqtSignal()
     
     def __init__(self, storage: StorageManager, parent=None):
         super().__init__(parent)
         self.storage = storage
         self.biometric = BiometricManager()
         self.attempts = 0
-        self.max_attempts = 5
+        self.max_attempts = config.MAX_LOGIN_ATTEMPTS
+        self.returned_to_start = False # New flag
         self.init_ui()
-    
+
     def init_ui(self):
         """Initialize the user interface."""
-        self.setWindowTitle("SecureVault - Login")
+        self.setWindowTitle(f"{config.APP_TITLE_PREFIX} - Login")
+        self.setMinimumSize(400, 180)
+        # Center the dialog on the screen
+        self.adjustSize()
+        screen_geometry = QApplication.primaryScreen().availableGeometry()
+        x = (screen_geometry.width() - self.width()) // 2
+        y = (screen_geometry.height() - self.height()) // 2
+        self.move(x, y)
         self.setModal(True)
-        self.setFixedSize(400, 300)
+
         
         layout = QVBoxLayout()
         
         # Logo/Title
-        title = QLabel("SecureVault Password Manager")
+        title = QLabel(config.APP_NAME)
         title.setAlignment(Qt.AlignCenter)
         font = title.font()
         font.setPointSize(16)
@@ -249,56 +238,51 @@ class LoginDialog(QDialog):
         vault_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(vault_label)
         
-        # Check if vault exists
-        vault_exists = os.path.exists(self.storage.filepath)
+        # Determine if vault is new or existing
+        self.is_new_vault = not os.path.exists(self.storage.filepath) or os.path.getsize(self.storage.filepath) == 0
         
-        if vault_exists:
-            # Existing vault - login
+        if self.is_new_vault:
+            layout.addWidget(QLabel("Create a new master password for this vault:"))
+        else:
             layout.addWidget(QLabel("Enter your master password:"))
             
-            self.password_input = QLineEdit()
-            self.password_input.setEchoMode(QLineEdit.Password)
-            self.password_input.returnPressed.connect(self.login)
-            layout.addWidget(self.password_input)
-            
-            button_layout = QHBoxLayout()
-            
-            self.login_button = QPushButton("Unlock")
-            self.login_button.clicked.connect(self.login)
-            button_layout.addWidget(self.login_button)
-            
-            # Add biometric button if available
-            if self.biometric.is_available() and self.storage.has_biometric_data():
-                self.biometric_button = QPushButton("🔐 Unlock with Biometrics")
-                self.biometric_button.clicked.connect(self.biometric_login)
-                button_layout.addWidget(self.biometric_button)
-            
-            layout.addLayout(button_layout)
-            
-            self.status_label = QLabel("")
-            self.status_label.setStyleSheet("color: red")
-            layout.addWidget(self.status_label)
-        else:
-            # New vault - create
-            layout.addWidget(QLabel("Create a new vault with a strong master password:"))
-            
-            self.password_input = QLineEdit()
-            self.password_input.setEchoMode(QLineEdit.Password)
-            self.password_input.textChanged.connect(self.check_password_strength)
-            layout.addWidget(self.password_input)
-            
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+        self.password_input.returnPressed.connect(self.login)
+        layout.addWidget(self.password_input)
+        
+        if self.is_new_vault:
             layout.addWidget(QLabel("Confirm password:"))
             self.confirm_input = QLineEdit()
             self.confirm_input.setEchoMode(QLineEdit.Password)
+            self.confirm_input.textChanged.connect(self.check_password_strength) # Connect for new vault
             layout.addWidget(self.confirm_input)
             
             self.strength_label = QLabel("")
             layout.addWidget(self.strength_label)
-            
-            self.create_button = QPushButton("Create Vault")
-            self.create_button.clicked.connect(self.create_vault)
-            self.create_button.setEnabled(False)
-            layout.addWidget(self.create_button)
+        
+        button_layout = QHBoxLayout()
+        
+        self.back_button = QPushButton("Back to Start")
+        self.back_button.clicked.connect(self.go_to_start_screen)
+        button_layout.addWidget(self.back_button)
+        
+        self.login_button = QPushButton("Set Master Password" if self.is_new_vault else "Unlock")
+        self.login_button.clicked.connect(self.login)
+        self.login_button.setEnabled(not self.is_new_vault) # Initially disabled for new vault until strong password
+        button_layout.addWidget(self.login_button)
+        
+        # Add biometric button if available and not a new vault
+        if not self.is_new_vault and self.biometric.is_available() and self.storage.has_biometric_data():
+            self.biometric_button = QPushButton("🔐 Unlock with PIN")
+            self.biometric_button.clicked.connect(self.biometric_login)
+            button_layout.addWidget(self.biometric_button)
+        
+        layout.addLayout(button_layout)
+        
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color: red")
+        layout.addWidget(self.status_label)
         
         layout.addStretch()
         self.setLayout(layout)
@@ -306,90 +290,126 @@ class LoginDialog(QDialog):
         # Focus password input
         self.password_input.setFocus()
     
+    def go_to_start_screen(self):
+        """Handle returning to the start screen."""
+        self.returned_to_start = True
+        self.reject()
+
+    
+
+    
     def check_password_strength(self):
         """Check and display password strength."""
         password = self.password_input.text()
-        is_strong, message = PasswordStrengthValidator.check_strength(password)
-        
-        if is_strong:
-            self.strength_label.setStyleSheet("color: green")
-            self.create_button.setEnabled(True)
-        else:
-            self.strength_label.setStyleSheet("color: red")
-            self.create_button.setEnabled(False)
-        
-        self.strength_label.setText(message)
-    
-    def create_vault(self):
-        """Create a new vault."""
-        password = self.password_input.text()
         confirm = self.confirm_input.text()
-        
-        if password != confirm:
-            QMessageBox.warning(self, "Error", "Passwords do not match")
-            return
-        
         is_strong, message = PasswordStrengthValidator.check_strength(password)
-        if not is_strong:
-            QMessageBox.warning(self, "Weak Password", message)
-            return
         
-        try:
-            self.storage.create_new_vault(password)
+        if self.is_new_vault:
+            if password != confirm:
+                self.strength_label.setStyleSheet("color: red")
+                self.strength_label.setText("Passwords do not match")
+                self.login_button.setEnabled(False)
+                return
             
-            # Ask about biometric setup
-            if self.biometric.is_available():
-                reply = QMessageBox.question(
-                    self, "Biometric Setup",
-                    "Would you like to enable biometric unlock for this vault?",
-                    QMessageBox.Yes | QMessageBox.No
-                )
+            if is_strong:
+                self.strength_label.setStyleSheet("color: green")
+                self.login_button.setEnabled(True)
+            else:
+                self.strength_label.setStyleSheet("color: red")
+                self.login_button.setEnabled(False)
+            
+            self.strength_label.setText(message)
+
+    def login(self):
+        """Attempt to login or set master password."""
+        password = self.password_input.text()
+        
+        if self.is_new_vault:
+            confirm = self.confirm_input.text()
+            if password != confirm:
+                QMessageBox.warning(self, "Error", "Passwords do not match")
+                return
+            
+            is_strong, message = PasswordStrengthValidator.check_strength(password)
+            if not is_strong:
+                QMessageBox.warning(self, "Weak Password", message)
+                return
+            
+            try:
+                self.storage.create_new_vault(password)
                 
-                if reply == QMessageBox.Yes:
-                    if self.biometric.authenticate("Enable biometric unlock for SecureVault"):
-                        self.storage.enable_biometric(password)
-                        QMessageBox.information(self, "Success", 
-                            "Vault created with biometric unlock enabled!")
+                # Ask about PIN setup
+                if self.biometric.is_available():
+                    reply = QMessageBox.question(
+                        self, "PIN Setup",
+                        "Would you like to enable PIN unlock for this vault?",
+                        QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+                    )
+                    if reply == QMessageBox.Yes:
+                        if self.biometric.authenticate(config.BIOMETRIC_AUTH_MESSAGE_ENABLE):
+                            self.storage.enable_biometric(password)
+                            QMessageBox.information(self, "Vault Created",
+                                "Vault created with PIN unlock enabled!")
+                        else:
+                            QMessageBox.warning(self, "PIN Setup Failed",
+                                "PIN authentication failed. You can enable it later in settings.")
                     else:
-                        QMessageBox.warning(self, "Biometric Setup Failed",
-                            "Biometric authentication failed. You can enable it later in settings.")
+                        QMessageBox.information(self, "Success", "Vault created successfully!")
                 else:
                     QMessageBox.information(self, "Success", "Vault created successfully!")
-            else:
-                QMessageBox.information(self, "Success", "Vault created successfully!")
-            
-            self.accept()
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to create vault: {str(e)}")
-    
-    def login(self):
-        """Attempt to login with password."""
-        password = self.password_input.text()
-        
-        if self.storage.unlock(password):
-            self.accept()
+                
+                self.accept()
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to create vault: {str(e)}")
+        else:
+            # Unlock existing vault
+            try:
+                if self.storage.unlock(password):
+                    self.accept()
+                else:
+                    self.attempts += 1
+                    if self.attempts < self.max_attempts:
+                        self.status_label.setText(f"Invalid master password. Attempts left: {self.max_attempts - self.attempts}")
+                        QMessageBox.warning(self, "Login Failed", "Invalid master password.")
+                    else:
+                        QMessageBox.critical(self, "Login Failed", "Maximum login attempts reached. Returning to start screen.")
+                        self.returned_to_start = True
+                        self.return_to_start_screen.emit()
+                        self.reject()
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to unlock vault: {str(e)}")
+
+    def biometric_login(self):
+        """Attempt to login using biometric authentication."""
+        if self.biometric.authenticate(config.BIOMETRIC_AUTH_MESSAGE_UNLOCK):
+            try:
+                if self.storage.unlock_with_biometric():
+                    self.accept()
+                else:
+                    self.attempts += 1
+                    if self.attempts < self.max_attempts:
+                        self.status_label.setText(f"Biometric unlock failed. Attempts left: {self.max_attempts - self.attempts}")
+                        QMessageBox.warning(self, "Login Failed", "Biometric unlock failed.")
+                    else:
+                        QMessageBox.critical(self, "Login Failed", "Maximum login attempts reached. Returning to start screen.")
+                        self.returned_to_start = True # Set flag before emitting signal
+                        self.return_to_start_screen.emit()
+                        self.reject()
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Biometric unlock failed: {str(e)}")
         else:
             self.attempts += 1
-            remaining = self.max_attempts - self.attempts
-            
-            if remaining > 0:
-                self.status_label.setText(f"Invalid password. {remaining} attempts remaining.")
-                self.password_input.clear()
-                self.password_input.setFocus()
+            if self.attempts < self.max_attempts:
+                self.status_label.setText(f"Biometric authentication cancelled or failed. Attempts left: {self.max_attempts - self.attempts}")
+                QMessageBox.warning(self, "Login Failed", "Biometric authentication cancelled or failed.")
             else:
-                QMessageBox.critical(self, "Locked Out", "Maximum login attempts exceeded.")
+                QMessageBox.critical(self, "Login Failed", "Maximum login attempts reached. Returning to start screen.")
+                self.returned_to_start = True # Set flag before emitting signal
+                self.return_to_start_screen.emit()
                 self.reject()
-    
-    def biometric_login(self):
-        """Attempt to login with biometrics."""
-        if self.biometric.authenticate("Unlock SecureVault"):
-            if self.storage.unlock_with_biometric():
-                self.accept()
-            else:
-                QMessageBox.warning(self, "Error", 
-                    "Biometric unlock failed. Please use your master password.")
-        else:
-            self.status_label.setText("Biometric authentication failed.")
+
+    def reject(self):
+        super().reject()
 
 
 class PasswordGeneratorDialog(QDialog):
@@ -413,9 +433,9 @@ class PasswordGeneratorDialog(QDialog):
         
         options_layout.addWidget(QLabel("Length:"), 0, 0)
         self.length_spin = QSpinBox()
-        self.length_spin.setMinimum(8)
-        self.length_spin.setMaximum(128)
-        self.length_spin.setValue(16)
+        self.length_spin.setMinimum(config.PASSWORD_GENERATOR_MIN_LENGTH)
+        self.length_spin.setMaximum(config.PASSWORD_GENERATOR_MAX_LENGTH)
+        self.length_spin.setValue(config.PASSWORD_GENERATOR_DEFAULT_LENGTH)
         self.length_spin.valueChanged.connect(self.generate_password)
         options_layout.addWidget(self.length_spin, 0, 1)
         
@@ -434,7 +454,7 @@ class PasswordGeneratorDialog(QDialog):
         self.digits_check.toggled.connect(self.generate_password)
         options_layout.addWidget(self.digits_check, 2, 0)
         
-        self.symbols_check = QCheckBox("Symbols (!@#$...)")
+        self.symbols_check = QCheckBox("Symbols (!@#$...")
         self.symbols_check.setChecked(True)
         self.symbols_check.toggled.connect(self.generate_password)
         options_layout.addWidget(self.symbols_check, 2, 1)
@@ -500,7 +520,7 @@ class PasswordGeneratorDialog(QDialog):
         
         # Exclude ambiguous characters if requested
         if self.exclude_ambiguous_check.isChecked():
-            ambiguous = "0O1lI"
+            ambiguous = config.PASSWORD_GENERATOR_AMBIGUOUS_CHARS
             chars = ''.join(c for c in chars if c not in ambiguous)
         
         # Generate password using secrets module
@@ -686,9 +706,10 @@ class DuplicateEntriesDialog(QDialog):
         self.load_duplicates()
     
     def init_ui(self):
-        self.setWindowTitle("Duplicate Entries")
+        self.setWindowTitle(f"{config.APP_TITLE_PREFIX} - Duplicate Entries")
         self.setModal(True)
         self.setMinimumWidth(900)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowMaximizeButtonHint)
         
         layout = QVBoxLayout()
         
@@ -697,14 +718,8 @@ class DuplicateEntriesDialog(QDialog):
         self.table.setHorizontalHeaderLabels([
             "Select", "Site/App", "Username", "Password", "URL", "Notes", "Date Added"
         ])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        self.table.setColumnWidth(0, 50) # Checkbox
-        self.table.setColumnWidth(1, 150) # Site/App
-        self.table.setColumnWidth(2, 150) # Username
-        self.table.setColumnWidth(3, 100) # Password
-        self.table.setColumnWidth(4, 150) # URL
-        self.table.setColumnWidth(5, 150) # Notes
-        self.table.setColumnWidth(6, 100) # Date Added
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.SingleSelection) # Allow single selection for 'Keep One'
         layout.addWidget(self.table)
@@ -842,6 +857,8 @@ class DuplicateEntriesDialog(QDialog):
 
 class MainWindow(QMainWindow):
     """Main application window."""
+    return_to_start_screen = pyqtSignal()
+    exit_application = pyqtSignal()
     
     def __init__(self, storage: StorageManager):
         super().__init__()
@@ -851,14 +868,14 @@ class MainWindow(QMainWindow):
         self.clipboard_timer.timeout.connect(self.clear_clipboard)
         self.auto_lock_timer = QTimer()
         self.auto_lock_timer.timeout.connect(self.auto_lock)
-        self.auto_lock_timeout = 300000  # 5 minutes default
+        self.auto_lock_timeout = config.AUTO_LOCK_TIMEOUT_DEFAULT  # 5 minutes default
         self.init_ui()
         self.load_entries()
         self.start_auto_lock_timer()
     
     def init_ui(self):
         """Initialize the user interface."""
-        self.setWindowTitle(f"SecureVault Password Manager - {os.path.basename(self.storage.filepath)}")
+        self.setWindowTitle(f"{config.APP_TITLE_PREFIX} - {os.path.basename(self.storage.filepath)}")
         self.setGeometry(100, 100, 1000, 600)
         
         # Create menu bar
@@ -877,7 +894,7 @@ class MainWindow(QMainWindow):
 
         # Add logo
         logo_label = QLabel()
-        logo_pixmap = QPixmap("logo/SecureVault_logo.png")
+        logo_pixmap = QPixmap("logo/SecureVault_logo.ico")
         logo_label.setPixmap(logo_pixmap.scaledToHeight(30, Qt.SmoothTransformation)) # Adjust height as needed
         toolbar_layout.addWidget(logo_label)
         
@@ -943,6 +960,11 @@ class MainWindow(QMainWindow):
         # Reset activity on any interaction
         self.installEventFilter(self)
     
+    def _handle_exit_action(self):
+        """Handle the exit action, emitting a signal to terminate the application."""
+        self.exit_application.emit()
+        self.close()
+
     def create_menu_bar(self):
         """Create the menu bar."""
         menubar = self.menuBar()
@@ -964,7 +986,7 @@ class MainWindow(QMainWindow):
         
         exit_action = QAction("Exit", self)
         exit_action.setShortcut("Ctrl+Q")
-        exit_action.triggered.connect(self.close)
+        exit_action.triggered.connect(self._handle_exit_action)
         file_menu.addAction(exit_action)
         
         # Edit menu
@@ -1014,11 +1036,13 @@ class MainWindow(QMainWindow):
         )
         
         if reply == QMessageBox.Yes:
-            self.close_vault()
+            self.start_auto_lock_timer() # User wants to continue, restart the timer
+        else:
+            self.close_vault() # User does not want to continue, close the vault
     
     def open_vault(self):
         """Open a different vault."""
-        dialog = VaultSelectionDialog(self.storage.filepath, self)
+        dialog = StartupDialog(self.storage.filepath, self)
         if dialog.exec_() and dialog.selected_path:
             # Close current vault
             self.close_vault(switch_vault=True, new_vault_path=dialog.selected_path)
@@ -1048,7 +1072,7 @@ class MainWindow(QMainWindow):
             # Show login dialog for new vault
             login_dialog = LoginDialog(self.storage)
             if login_dialog.exec_():
-                # Update window
+                # Login successful
                 self.setWindowTitle(f"SecureVault Password Manager - {os.path.basename(new_vault_path)}")
                 self.load_entries()
                 self.start_auto_lock_timer()
@@ -1057,7 +1081,8 @@ class MainWindow(QMainWindow):
                 # If login cancelled, close application
                 self.close()
         else:
-            # Just close the application
+            # Close the current main window and signal to return to start screen
+            self.return_to_start_screen.emit()
             self.close()
     
     def toggle_password_visibility(self, checked: bool):
@@ -1071,7 +1096,7 @@ class MainWindow(QMainWindow):
                     if checked:
                         self.table.setItem(row, 3, QTableWidgetItem(entry.password)) # Adjusted column index
                     else:
-                        self.table.setItem(row, 3, QTableWidgetItem("••••••••")) # Adjusted column index
+                        self.table.setItem(row, 3, QTableWidgetItem(config.TABLE_PASSWORD_HIDDEN_TEXT)) # Adjusted column index
 
     def load_entries(self):
         """Load entries into the table."""
@@ -1141,7 +1166,7 @@ class MainWindow(QMainWindow):
         self.table.setItem(row, 1, site_item)
         
         self.table.setItem(row, 2, QTableWidgetItem(entry.username))
-        self.table.setItem(row, 3, QTableWidgetItem("••••••••"))
+        self.table.setItem(row, 3, QTableWidgetItem(config.TABLE_PASSWORD_HIDDEN_TEXT))
         self.table.setItem(row, 4, QTableWidgetItem(entry.notes[:50] + "..." if len(entry.notes) > 50 else entry.notes))
         
         # Format date
@@ -1195,9 +1220,9 @@ class MainWindow(QMainWindow):
             show = True
             if search_text:
                 # Check site, username, and notes
-                site = self.table.item(row, 0).text().lower()
-                username = self.table.item(row, 1).text().lower()
-                notes = self.table.item(row, 3).text().lower()
+                site = self.table.item(row, 1).text().lower() # Corrected index
+                username = self.table.item(row, 2).text().lower() # Corrected index
+                notes = self.table.item(row, 4).text().lower() # Corrected index
                 
                 show = search_text in site or search_text in username or search_text in notes
             
@@ -1297,7 +1322,7 @@ class MainWindow(QMainWindow):
             
             # Start timer to clear clipboard
             self.clipboard_timer.stop()
-            self.clipboard_timer.start(30000)  # 30 seconds
+            self.clipboard_timer.start(config.CLIPBOARD_CLEAR_TIMEOUT_DEFAULT)  # 30 seconds
             
             self.statusBar().showMessage("Password copied to clipboard (auto-clear in 30s)", 2000)
         finally:
@@ -1392,13 +1417,7 @@ class MainWindow(QMainWindow):
         consent_dialog = QMessageBox(self)
         consent_dialog.setWindowTitle("Browser Password Import Consent")
         consent_dialog.setText(
-            f"SecureVault will attempt to import passwords from {browser}.\n\n"
-            "IMPORTANT:\n"
-            "• This will only read passwords stored on THIS device\n"
-            "• You must be the owner/administrator of this device\n"
-            "• Passwords will be stored encrypted in your local vault\n"
-            "• No data will be transmitted off this device\n\n"
-            "Do you consent to importing passwords from your browser?"
+            config.BROWSER_IMPORT_CONSENT_TEXT.format(browser=browser)
         )
         consent_dialog.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
         consent_dialog.setDefaultButton(QMessageBox.No)
@@ -1519,19 +1538,18 @@ class MainWindow(QMainWindow):
         
         # Get filename
         filename, _ = QFileDialog.getSaveFileName(
-            self, "Export to CSV", "passwords.csv", "CSV Files (*.csv)"
+            self, "Export to CSV", 
+            "passwords.csv", "CSV Files (*.csv)"
         )
         
         if filename:
             try:
-                entries = self.storage.get_entries()
-                
-                # Write CSV
                 import csv
                 with open(filename, 'w', newline='', encoding='utf-8') as f:
                     writer = csv.writer(f)
                     writer.writerow(['site', 'username', 'password', 'url', 'notes'])
                     
+                    entries = self.storage.get_entries() # Fetch entries here
                     for entry in entries:
                         writer.writerow([
                             entry.site,
@@ -1566,10 +1584,10 @@ class MainWindow(QMainWindow):
     
     def _log_action(self, action: str, details: str):
         """Log security-relevant actions."""
-        log_dir = os.path.join(os.path.expanduser("~"), ".securevault", "logs")
+        log_dir = os.path.join(os.path.expanduser("~"), config.CONFIG_DIR_NAME, "logs")
         os.makedirs(log_dir, exist_ok=True)
         
-        log_file = os.path.join(log_dir, "audit.log")
+        log_file = os.path.join(log_dir, config.AUDIT_LOG_FILE)
         timestamp = datetime.datetime.now().isoformat()
         
         with open(log_file, 'a', encoding='utf-8') as f:
@@ -1622,27 +1640,31 @@ class SettingsDialog(QDialog):
         change_password_btn.clicked.connect(self.change_master_password)
         security_layout.addRow("Master Password:", change_password_btn)
         
-        # Biometric settings
+        # PIN settings
         if self.biometric.is_available():
-            biometric_group = QGroupBox("Biometric Authentication")
+            biometric_group = QGroupBox("PIN Authentication")
             biometric_layout = QVBoxLayout()
-            
-            self.biometric_enabled = QCheckBox("Enable biometric unlock")
+
+            self.biometric_enabled = QCheckBox("Enable PIN unlock")
             self.biometric_enabled.setChecked(self.storage.has_biometric_data())
             self.biometric_enabled.toggled.connect(self.toggle_biometric)
             biometric_layout.addWidget(self.biometric_enabled)
-            
+
+            self.change_pin_button = QPushButton("Change PIN")
+            self.change_pin_button.clicked.connect(self.change_biometric_pin)
+            self.change_pin_button.setEnabled(self.storage.has_biometric_data())
+            biometric_layout.addWidget(self.change_pin_button)
+
             biometric_info = QLabel(f"Device: {self.biometric.get_device_info()}")
             biometric_info.setWordWrap(True)
             biometric_layout.addWidget(biometric_info)
-            
+
             biometric_group.setLayout(biometric_layout)
-            security_layout.addRow(biometric_group)
-        
+            security_layout.addRow(biometric_group)        
         # Auto-lock timeout
         self.timeout_spin = QSpinBox()
         self.timeout_spin.setMinimum(0)
-        self.timeout_spin.setMaximum(60)
+        self.timeout_spin.setMaximum(config.AUTO_LOCK_TIMEOUT_MAX_MINUTES)
         self.timeout_spin.setValue(self.current_timeout // 60000)  # Convert to minutes
         self.timeout_spin.setSuffix(" minutes")
         self.timeout_spin.setSpecialValueText("Disabled")
@@ -1650,9 +1672,9 @@ class SettingsDialog(QDialog):
         
         # Clipboard timeout
         self.clipboard_spin = QSpinBox()
-        self.clipboard_spin.setMinimum(10)
-        self.clipboard_spin.setMaximum(300)
-        self.clipboard_spin.setValue(30)
+        self.clipboard_spin.setMinimum(config.CLIPBOARD_CLEAR_TIMEOUT_MIN_SECONDS)
+        self.clipboard_spin.setMaximum(config.CLIPBOARD_CLEAR_TIMEOUT_MAX_SECONDS)
+        self.clipboard_spin.setValue(config.CLIPBOARD_CLEAR_TIMEOUT_DEFAULT_SECONDS)
         self.clipboard_spin.setSuffix(" seconds")
         security_layout.addRow("Clear clipboard after:", self.clipboard_spin)
         
@@ -1704,13 +1726,9 @@ class SettingsDialog(QDialog):
         about_layout = QVBoxLayout()
         
         about_text = QLabel(
-            "<h3>SecureVault Password Manager</h3>"
-            "<p>Version 1.2</p>"
-            "<p><b>Legal Notice:</b><br>"
-            "This tool is for personal use only. It must operate only on the device "
-            "where it is installed and only with the explicit consent of the device owner. "
-            "It must never be used to extract or exfiltrate passwords from devices you "
-            "do not own or administer.</p>"
+            f"<h3>{config.APP_NAME}</h3>"
+            f"<p>Version {config.APP_VERSION}</p>"
+            f"<p><b>Legal Notice:</b><br>{config.APP_DISCLAIMER}</p>"
         )
         about_text.setWordWrap(True)
         about_layout.addWidget(about_text)
@@ -1730,45 +1748,51 @@ class SettingsDialog(QDialog):
         self.setLayout(layout)
     
     def toggle_biometric(self, enabled: bool):
-        """Toggle biometric authentication."""
+        """Toggle PIN authentication."""
         if enabled:
-            # Enable biometric
+            # Enable PIN
             password, ok = QInputDialog.getText(
-                self, "Enable Biometric",
-                "Enter your master password to enable biometric unlock:",
-                QLineEdit.Password
+                self, "Enable PIN",
+                "Enter your master password to enable PIN unlock:",
+                QLineEdit.Password, ""
             )
-            
             if ok and password:
-                if self.biometric.authenticate("Enable biometric unlock for SecureVault"):
+                if self.biometric.authenticate(config.BIOMETRIC_AUTH_MESSAGE_ENABLE):
                     if self.storage.enable_biometric(password):
-                        QMessageBox.information(self, "Success", 
-                            "Biometric unlock enabled successfully!")
+                        QMessageBox.information(self, "Success",
+                            "PIN unlock enabled successfully!")
                     else:
-                        QMessageBox.warning(self, "Error", 
-                            "Failed to enable biometric unlock. Check your master password.")
+                        QMessageBox.warning(self, "Error",
+                            "Failed to enable PIN unlock. Check your master password.")
                         self.biometric_enabled.setChecked(False)
                 else:
-                    QMessageBox.warning(self, "Error", 
-                        "Biometric authentication failed.")
+                    QMessageBox.warning(self, "Error",
+                        "PIN authentication failed.")
                     self.biometric_enabled.setChecked(False)
             else:
                 self.biometric_enabled.setChecked(False)
         else:
-            # Disable biometric
+            # Disable PIN
             if self.storage.disable_biometric():
-                QMessageBox.information(self, "Success", 
-                    "Biometric unlock disabled.")
+                QMessageBox.information(self, "Success",
+                    "PIN unlock disabled.")
             else:
-                QMessageBox.warning(self, "Error", 
-                    "Failed to disable biometric unlock.")
+                QMessageBox.warning(self, "Error",
+                    "Failed to disable PIN unlock.")
                 self.biometric_enabled.setChecked(True)
     
     def change_master_password(self):
         """Change the master password."""
         dialog = ChangeMasterPasswordDialog(self.storage, self)
         dialog.exec_()
-    
+
+    def change_biometric_pin(self):
+        """Change the PIN."""
+        if self.biometric.change_pin():
+            QMessageBox.information(self, "Success", "PIN changed successfully!")
+        else:
+            QMessageBox.warning(self, "Cancelled", "PIN change cancelled or failed.")
+
     def change_vault_location(self):
         """Change vault file location."""
         new_location, _ = QFileDialog.getSaveFileName(
@@ -1780,22 +1804,37 @@ class SettingsDialog(QDialog):
         if new_location:
             try:
                 import shutil
-                # Copy vault to new location
-                shutil.copy2(self.storage.filepath, new_location)
+
+                old_biometric_key_id = None
+                old_biometric_secret = None
+
+                # Check if biometric data exists for the old vault path
+                if self.storage.has_biometric_data():
+                    old_biometric_key_id = self.storage._biometric_key_id
+                    old_biometric_secret = self.biometric.retrieve_secret(old_biometric_key_id)
+
+                # Move vault to new location
+                shutil.move(self.storage.filepath, new_location)
                 
                 # Update storage path
                 old_location = self.storage.filepath
                 self.storage.filepath = new_location
-                
+                self.storage.update_vault_id() # Update biometric key ID
+
+                # If biometric data existed, migrate it to the new vault ID
+                if old_biometric_secret and old_biometric_key_id:
+                    # Store with new biometric key ID
+                    self.biometric.store_secret(self.storage._biometric_key_id, old_biometric_secret)
+                    # Delete old biometric secret
+                    self.biometric.delete_secret(old_biometric_key_id)
+
                 # Save to recent vaults
-                dialog = VaultSelectionDialog("", self)
+                dialog = StartupDialog("", self)
                 dialog.save_to_recent(new_location)
                 
                 QMessageBox.information(
                     self, "Success",
-                    f"Vault moved to:\n{new_location}\n\n"
-                    f"The old vault file at:\n{old_location}\n"
-                    "has been kept as a backup."
+                    f"Vault moved to:\n{new_location}"
                 )
                 
                 # Update parent window title
@@ -1937,24 +1976,23 @@ class ChangeMasterPasswordDialog(QDialog):
             return
         
         if self.storage.change_master_password(current, new):
-            # Update biometric data if enabled
-            if self.storage.has_biometric_data():
-                reply = QMessageBox.question(
-                    self, "Update Biometric",
-                    "Would you like to update biometric authentication with the new password?",
-                    QMessageBox.Yes | QMessageBox.No
-                )
-                
-                if reply == QMessageBox.Yes:
-                    biometric = BiometricManager()
-                    if biometric.authenticate("Update biometric authentication"):
-                        self.storage.enable_biometric(new)
-            
-            QMessageBox.information(
-                self, "Success", 
-                "Master password changed successfully!"
-            )
-            self.accept()
+                        # Update PIN data if enabled
+                        if self.storage.has_biometric_data():
+                            reply = QMessageBox.question(
+                                self, "Update PIN",
+                                "Would you like to update PIN authentication with the new password?",
+                                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+                            )
+                            if reply == QMessageBox.Yes:
+                                biometric = BiometricManager()
+                                if biometric.authenticate(config.BIOMETRIC_AUTH_MESSAGE_UPDATE):
+                                    self.storage.enable_biometric(new)
+
+                                QMessageBox.information(
+                                    self, "Success", 
+                                    "Master password changed successfully!"
+                                )
+                                self.accept()
         else:
             QMessageBox.critical(
                 self, "Error",
