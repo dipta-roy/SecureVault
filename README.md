@@ -30,7 +30,7 @@ SecureVault is designed for personal, local-only password management. Its primar
   - [Application Structure](#application-structure)
   - [Build Process](#build-process)
 - [Contributing](#contributing)
-- [License](#license)
+- [Notice](#Notice)
 
 ## Features
 - **Secure Storage**: Passwords are stored in an encrypted vault file (`~/.securevault/vault.enc`) using AES-256-GCM.
@@ -211,5 +211,5 @@ Antivirus software may flag SecureVault due to:
   - Executable is self-contained; no Python needed on target machines.
   - May trigger antivirus warnings.
 
-### NOTICE
+### Notice
 **Important Note** - The application has been tested on windows and must be used at personal risk only and educational purposes only. Not for production use.
