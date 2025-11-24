@@ -1,6 +1,6 @@
 """
 SecureVault Password Manager
-Copyright (c) 2024
+Copyright (c) 2025
 
 LEGAL NOTICE AND THREAT MODEL:
 This tool is for personal use only. It must operate only on the device where 

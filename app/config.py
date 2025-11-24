@@ -5,15 +5,15 @@ Configuration constants for the SecureVault application.
 import os
 
 # Application Metadata
-APP_VERSION = "1.3"  # Use: Current version of the application. Type: str. Range: Semantic versioning string (e.g., "1.0.0")
+APP_VERSION = "1.4"  # Use: Current version of the application. Type: str. Range: Semantic versioning string (e.g., "1.0.0")
 APP_AUTHOR = "Dipta Roy"  # Use: Author of the application. Type: str. Range: Any valid string representing the author's name.
 APP_NAME = "SecureVault Password Manager"  # Use: Full name of the application. Type: str. Range: Any valid string.
 APP_TITLE_PREFIX = f"{APP_NAME} v{APP_VERSION}"  # Use: Prefix for the application window titles, combining name and version. Type: str (f-string). Range: Derived from APP_NAME and APP_VERSION.
-APP_DISCLAIMER = """  # Use: Legal disclaimer displayed in the application. Type: str (multi-line). Range: Any valid string.
-This tool is for personal use only. It must operate only on the device where
-it is installed and only with the explicit consent of the device owner. It must
-never be used to extract or exfiltrate passwords from devices you do not own or
-administer.
+APP_DISCLAIMER = """This tool is for personal use only. It must operate only on the device where 
+it is installed and only with the explicit consent of the device owner. It must 
+never be used to extract or exfiltrate passwords from devices you do not own or 
+administer. The app requires the user to acknowledge a consent dialog before 
+fetching browser passwords.
 """
 
 # Security Settings

@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (
     QMessageBox, QFileDialog, QGroupBox, QCheckBox, QSpinBox, QTextEdit,
     QDialogButtonBox, QHeaderView, QMenu, QAction, QProgressDialog,
     QComboBox, QTabWidget, QFormLayout, QApplication, QInputDialog,
-    QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator
+    QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QProgressBar
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QIcon, QClipboard, QFont, QPixmap
@@ -696,6 +696,47 @@ class CSVImportWorker(QThread):
             self.error.emit(str(e))
 
 
+class CSVExportWorker(QThread):
+    """Worker thread for CSV export."""
+    
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+    
+    def __init__(self, filename: str, entries: List[PasswordEntry]):
+        super().__init__()
+        self.filename = filename
+        self.entries = entries
+    
+    def run(self):
+        """Run the export process."""
+        try:
+            import csv
+            total = len(self.entries)
+            self.progress.emit(0, "Starting export...")
+            
+            with open(self.filename, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(['site', 'username', 'password', 'url', 'notes'])
+                
+                for i, entry in enumerate(self.entries):
+                    writer.writerow([
+                        entry.site,
+                        entry.username,
+                        entry.password,
+                        entry.url,
+                        entry.notes
+                    ])
+                    # Update progress
+                    if total > 0:
+                        percent = int((i + 1) / total * 100)
+                        self.progress.emit(percent, f"Exporting... {percent}%")
+            
+            self.finished.emit(self.filename)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class DuplicateEntriesDialog(QDialog):
     """Dialog for managing duplicate entries."""
     
@@ -957,6 +998,17 @@ class MainWindow(QMainWindow):
         # Status bar
         self.statusBar().showMessage("Vault unlocked")
         
+        # Total password count
+        self.count_label = QLabel("Total Passwords: 0")
+        self.count_label.setStyleSheet("padding-right: 10px;")
+        self.statusBar().addPermanentWidget(self.count_label)
+        
+        # Progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setMaximumWidth(200)
+        self.progress_bar.setVisible(False)
+        self.statusBar().addPermanentWidget(self.progress_bar)
+        
         # Reset activity on any interaction
         self.installEventFilter(self)
     
@@ -1109,6 +1161,12 @@ class MainWindow(QMainWindow):
         # Ensure password visibility is correct after loading entries
         self.toggle_password_visibility(self.show_passwords_action.isChecked())
         self.update_delete_selected_button_state() # Update button state after loading
+        self.update_entry_count()
+
+    def update_entry_count(self):
+        """Update the total password count label."""
+        count = self.table.rowCount()
+        self.count_label.setText(f"Total Passwords: {count}")
 
     def update_delete_selected_button_state(self):
         """Enable/disable delete selected button based on checkbox states."""
@@ -1264,6 +1322,7 @@ class MainWindow(QMainWindow):
             self.storage.add_entry(entry)
             self.add_entry_to_table(entry)
             self.statusBar().showMessage("Entry added", 2000)
+            self.update_entry_count()
     
     def edit_entry(self, entry_id: str):
         """Edit an existing entry."""
@@ -1370,19 +1429,17 @@ class MainWindow(QMainWindow):
         )
         
         if filename:
-            progress = QProgressDialog("Importing CSV file...", "Cancel", 0, 100, self)
-            progress.setWindowModality(Qt.WindowModal)
-            progress.show()
+            self.show_progress("Importing CSV file...")
             
             self.csv_import_worker = CSVImportWorker(filename)
-            self.csv_import_worker.progress.connect(lambda v, msg: (progress.setValue(v), progress.setLabelText(msg)))
-            self.csv_import_worker.finished.connect(lambda entries: self._handle_csv_import_finished(entries, progress, filename))
-            self.csv_import_worker.error.connect(lambda err: self._handle_csv_import_error(err, progress))
+            self.csv_import_worker.progress.connect(self.update_progress)
+            self.csv_import_worker.finished.connect(lambda entries: self._handle_csv_import_finished(entries, filename))
+            self.csv_import_worker.error.connect(self._handle_csv_import_error)
             self.csv_import_worker.start()
 
-    def _handle_csv_import_finished(self, entries: List[PasswordEntry], progress: QProgressDialog, filename: str):
+    def _handle_csv_import_finished(self, entries: List[PasswordEntry], filename: str):
         """Handle successful CSV import."""
-        progress.close()
+        self.hide_progress()
         
         if not entries:
             QMessageBox.information(
@@ -1403,9 +1460,9 @@ class MainWindow(QMainWindow):
         )
         self._log_action("CSV_IMPORT", f"Imported {added} entries from {filename}")
 
-    def _handle_csv_import_error(self, error: str, progress: QProgressDialog):
+    def _handle_csv_import_error(self, error: str):
         """Handle CSV import error."""
-        progress.close()
+        self.hide_progress()
         QMessageBox.critical(
             self, "Import Error",
             f"Failed to import CSV: {error}"
@@ -1428,23 +1485,20 @@ class MainWindow(QMainWindow):
         # Log consent
         self._log_action("BROWSER_IMPORT_CONSENT", f"User consented to import from {browser}")
         
-        # Create progress dialog
-        progress = QProgressDialog("Importing browser passwords...", "Cancel", 0, 100, self)
-        progress.setWindowModality(Qt.WindowModal)
-        progress.show()
+        self.show_progress("Importing browser passwords...")
         
         # Create worker thread
         self.import_worker = BrowserImportWorker(browser)
-        self.import_worker.progress.connect(lambda v, msg: (progress.setValue(v), progress.setLabelText(msg)))
-        self.import_worker.finished.connect(lambda entries: self._handle_browser_import_finished(entries, progress))
-        self.import_worker.error.connect(lambda err: self._handle_browser_import_error(err, progress, browser))
+        self.import_worker.progress.connect(self.update_progress)
+        self.import_worker.finished.connect(self._handle_browser_import_finished)
+        self.import_worker.error.connect(lambda err: self._handle_browser_import_error(err, browser))
         
         # Start import
         self.import_worker.start()
     
-    def _handle_browser_import_finished(self, entries: List[PasswordEntry], progress: QProgressDialog):
+    def _handle_browser_import_finished(self, entries: List[PasswordEntry]):
         """Handle successful browser import."""
-        progress.close()
+        self.hide_progress()
         
         if not entries:
             QMessageBox.information(
@@ -1468,9 +1522,9 @@ class MainWindow(QMainWindow):
         # Log the import
         self._log_action("BROWSER_IMPORT_SUCCESS", f"Imported {added} entries")
     
-    def _handle_browser_import_error(self, error: str, progress: QProgressDialog, browser: str):
+    def _handle_browser_import_error(self, error: str, browser: str):
         """Handle browser import error."""
-        progress.close()
+        self.hide_progress()
         
         # Check if it's a platform limitation
         if "not supported" in error.lower() or "manual export" in error.lower():
@@ -1543,36 +1597,49 @@ class MainWindow(QMainWindow):
         )
         
         if filename:
-            try:
-                import csv
-                with open(filename, 'w', newline='', encoding='utf-8') as f:
-                    writer = csv.writer(f)
-                    writer.writerow(['site', 'username', 'password', 'url', 'notes'])
-                    
-                    entries = self.storage.get_entries() # Fetch entries here
-                    for entry in entries:
-                        writer.writerow([
-                            entry.site,
-                            entry.username,
-                            entry.password,
-                            entry.url,
-                            entry.notes
-                        ])
-                
-                QMessageBox.information(
-                    self, "Export Complete",
-                    f"Exported {len(entries)} entries to {filename}\n\n"
-                    "Remember to delete this file after use!"
-                )
-                
-                # Log the export
-                self._log_action("CSV_EXPORT", f"Exported {len(entries)} entries to {filename}")
-                
-            except Exception as e:
-                QMessageBox.critical(
-                    self, "Export Error",
-                    f"Failed to export CSV: {str(e)}"
-                )
+            entries = self.storage.get_entries()
+            self.show_progress("Exporting to CSV...")
+            
+            self.csv_export_worker = CSVExportWorker(filename, entries)
+            self.csv_export_worker.progress.connect(self.update_progress)
+            self.csv_export_worker.finished.connect(lambda fname: self._handle_csv_export_finished(fname, len(entries)))
+            self.csv_export_worker.error.connect(self._handle_csv_export_error)
+            self.csv_export_worker.start()
+
+    def _handle_csv_export_finished(self, filename: str, count: int):
+        """Handle successful CSV export."""
+        self.hide_progress()
+        QMessageBox.information(
+            self, "Export Complete",
+            f"Exported {count} entries to {filename}\n\n"
+            "Remember to delete this file after use!"
+        )
+        self._log_action("CSV_EXPORT", f"Exported {count} entries to {filename}")
+
+    def _handle_csv_export_error(self, error: str):
+        """Handle CSV export error."""
+        self.hide_progress()
+        QMessageBox.critical(
+            self, "Export Error",
+            f"Failed to export CSV: {error}"
+        )
+    
+    def show_progress(self, message: str):
+        """Show progress bar with message."""
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(True)
+        self.statusBar().showMessage(message)
+
+    def update_progress(self, value: int, message: str):
+        """Update progress bar value and message."""
+        self.progress_bar.setValue(value)
+        self.statusBar().showMessage(message)
+
+    def hide_progress(self):
+        """Hide progress bar and clear message."""
+        self.progress_bar.setVisible(False)
+        self.statusBar().clearMessage()
+        self.statusBar().showMessage("Vault unlocked")
     
     def show_settings(self):
         """Show settings dialog."""
